@@ -78,6 +78,15 @@ pub fn create_reader<'a>(file: File<'a, ()>, endianess: &Endianness) -> EndianAw
 pub trait Leb128Ext: io::Read {
     fn read_sleb128(&mut self) -> Result<i64, leb128::read::Error>;
     fn read_uleb128(&mut self) -> Result<u64, leb128::read::Error>;
+
+    fn read_uleb128p1(&mut self) -> Result<Option<u64>, leb128::read::Error> {
+        let value = self.read_uleb128()?;
+        return if value == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(value - 1))
+        };
+    }
 }
 
 impl Leb128Ext for fs::File {

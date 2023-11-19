@@ -2,7 +2,6 @@ use std::io::Read;
 
 use adler::adler32;
 use buffered_reader::File;
-use byteorder::ReadBytesExt;
 
 use crate::endian_aware_reader::{EndianAwareFileReader, EndianAwareReader, Endianness, LittleEndianReader};
 
@@ -32,8 +31,8 @@ pub struct RawFieldId {
 
 #[derive(Debug)]
 pub struct RawMethodId {
-    pub class_idx: u32,
-    pub proto_idx: u32,
+    pub class_idx: u16,
+    pub proto_idx: u16,
     pub name_idx: u32,
 }
 
@@ -82,6 +81,95 @@ pub struct RawClassDef {
     pub annotations_off: u32,
     pub class_data_off: u32,
     pub static_values_off: u32,
+}
+
+
+#[derive(Debug, PartialEq)]
+pub struct RawClassDataItem {
+    pub static_fields: Vec<RawEncodedField>,
+    pub instance_fields: Vec<RawEncodedField>,
+    pub direct_methods: Vec<RawEncodedMethod>,
+    pub virtual_methods: Vec<RawEncodedMethod>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawEncodedField {
+    pub field_idx: usize,
+    pub access_flags: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawEncodedMethod {
+    pub method_idx: usize,
+    pub access_flags: u32,
+    pub code_off: u64,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawAnnotations {
+    pub class_annotations_off: u32,
+    pub fld_annot: Option<Vec<RawFieldAnnotation>>,
+    pub mtd_annot: Option<Vec<RawMethodAnnotation>>,
+    pub prm_annot: Option<Vec<RawParameterAnnotation>>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawAnnotationSet {
+    pub annotation_offsets: Vec<u32>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawAnnotationSetRefList {
+    pub annotation_set_offsets: Vec<Option<u32>>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawFieldAnnotation {
+    pub field_idx: u32,
+    pub annotations_offset: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawMethodAnnotation {
+    pub method_idx: u32,
+    pub annotations_offset: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RawParameterAnnotation {
+    pub method_idx: u32,
+    pub annotations_offset: u32,
+}
+
+// Docs: code_item
+#[derive(Debug, PartialEq)]
+pub struct RawCodeItem {
+    // number of registers used by this code
+    pub registers_size: u16,
+    // number of words of incoming arguments
+    pub ins_size: u16,
+    // number of words of outgoing argument space
+    pub outs_size: u16,
+    pub tries_size: u16,
+    pub debug_info_off: u32,
+    pub insns_size: u32,
+    pub insns: Vec<u16>,
+    pub padding: Option<u16>,
+    pub tries: Option<Vec<RawTryItem>>,
+    // missing the handler here: need to break up processing to handle handler_off for try_item's
+}
+
+
+// Docs: try_item
+#[derive(Debug, PartialEq)]
+pub struct RawTryItem {
+    // start address of the block of code covered by this entry
+    // a count of 16-bit code units to the start of the first covered instruction
+    pub start_addr: u32,
+    // number of 16-bit code units covered by this entry
+    pub insn_count: u16,
+    // offset to the individual handler within the encoded_catch_handler_list block for the associated code_item
+    pub handler_off: u16,
 }
 
 #[derive(Debug)]
@@ -184,13 +272,9 @@ fn parse_proto_ids(reader: &mut EndianAwareFileReader, header: &RawHeader) -> Ve
 fn parse_field_ids(reader: &mut EndianAwareFileReader, header: &RawHeader) -> Vec<RawFieldId> {
     (0..header.field_ids_size)
         .map(|_| {
-            let class_idx = reader.read_u16().expect("Failed to read class_idx");
-            reader.skip(2).expect("Failed to skip 2 bytes");
-            let type_idx = reader.read_u16().expect("Failed to read type_idx");
-            reader.skip(2).expect("Failed to skip 2 bytes");
             RawFieldId {
-                class_idx: class_idx,
-                type_idx: type_idx,
+                class_idx: reader.read_u16().expect("Failed to read class_idx"),
+                type_idx: reader.read_u16().expect("Failed to read type_idx"),
                 name_idx: reader.read_u32().expect("Failed to read name_idx"),
             }
         })
@@ -200,8 +284,8 @@ fn parse_field_ids(reader: &mut EndianAwareFileReader, header: &RawHeader) -> Ve
 fn parse_method_ids(reader: &mut EndianAwareFileReader, header: &RawHeader) -> Vec<RawMethodId> {
     (0..header.method_ids_size)
         .map(|_| RawMethodId {
-            class_idx: reader.read_u32().expect("Failed to read class_idx"),
-            proto_idx: reader.read_u32().expect("Failed to read proto_idx"),
+            class_idx: reader.read_u16().expect("Failed to read class_idx"),
+            proto_idx: reader.read_u16().expect("Failed to read proto_idx"),
             name_idx: reader.read_u32().expect("Failed to read name_idx"),
         })
         .collect()
