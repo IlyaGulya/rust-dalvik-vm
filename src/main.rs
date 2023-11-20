@@ -4,14 +4,14 @@ use std::os::unix::fs::MetadataExt;
 
 use buffered_reader::BufferedReader;
 use byteorder::{ByteOrder, ReadBytesExt};
+use crate::dex::dex_file;
+use crate::dex::dex_file::ClassDefinition;
+use crate::dex::raw_dex_file::parse_raw_dex_file;
 
-use endian_aware_reader::EndianAwareReader;
+use crate::runtime::{Runtime, RuntimeExt};
 
-use crate::raw_dex_file::parse_raw_dex_file;
-
-mod endian_aware_reader;
-mod raw_dex_file;
-mod dex_file;
+mod runtime;
+mod dex;
 
 
 fn main() {

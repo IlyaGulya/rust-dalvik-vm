@@ -6,8 +6,8 @@ use std::rc::Rc;
 use bitmask_enum::bitmask;
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
-use crate::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
+use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
+use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
 
 #[derive(Debug, PartialEq)]
 pub struct DexFile {

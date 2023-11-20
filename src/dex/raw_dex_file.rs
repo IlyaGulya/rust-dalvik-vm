@@ -3,7 +3,7 @@ use std::io::Read;
 use adler::adler32;
 use buffered_reader::File;
 
-use crate::endian_aware_reader::{EndianAwareFileReader, EndianAwareReader, Endianness, LittleEndianReader};
+use crate::dex::endian_aware_reader::{EndianAwareFileReader, EndianAwareReader, Endianness, LittleEndianReader};
 
 #[derive(Debug)]
 pub struct RawStringId {
