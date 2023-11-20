@@ -248,7 +248,6 @@ pub enum DebugItemBytecodes {
 }
 
 
-//noinspection RsEnumVariantNaming
 #[allow(non_camel_case_types)]
 #[bitmask(u32)]
 pub enum AccessFlags {
@@ -492,20 +491,21 @@ fn parse_encoded_fields(fields: Vec<RawEncodedField>, data: &DexFileData) -> Vec
 fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: &DexFileData) -> Vec<EncodedMethod> {
     methods
         .iter()
-        .map(|method| {
-            let method = data.methods[method.method_idx].clone();
+        .map(|raw| {
+            let method = data.methods[raw.method_idx].clone();
             let access_flags = AccessFlags {
-                bits: file.read_uleb128().expect("Failed to read access flags") as u32,
+                bits: raw.access_flags,
             };
-            let code_offset = file.read_uleb128().expect("Failed to read code offset");
 
             EncodedMethod {
                 method: method.clone(),
                 access_flags,
-                code: if code_offset != 0 {
-                    Some(parse_code(file, data, code_offset))
+                code: if raw.code_off != 0 {
+                    Some(parse_code(file, data, raw.code_off))
                 } else {
-                    if !access_flags.contains(AccessFlags::ACC_ABSTRACT) && !access_flags.contains(AccessFlags::ACC_NATIVE) {
+                    let is_abstract = access_flags.contains(AccessFlags::ACC_ABSTRACT);
+                    let is_native = access_flags.contains(AccessFlags::ACC_NATIVE);
+                    if !is_abstract && !is_native {
                         panic!("Non-abstract and non-native method without code: {:?}", method);
                     }
                     None
@@ -516,6 +516,9 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
 }
 
 fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
+    file.seek(SeekFrom::Start(offset))
+        .expect(format!("Failed to seek to code offset {}", offset).as_str());
+
     let registers_size = file.read_u16::<LittleEndian>().expect("Failed to read registers_size");
     let ins_size = file.read_u16::<LittleEndian>().expect("Failed to read ins_size");
     let outs_size = file.read_u16::<LittleEndian>().expect("Failed to read outs_size");
@@ -526,7 +529,7 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
 
     let tries = parse_tries(file, tries_size);
 
-    let debug_info = parse_debug_info(file, &data, debug_info_offset);
+    let debug_info = parse_debug_info(file, data, debug_info_offset);
     Code {
         registers_size: registers_size,
         ins_size: ins_size,
@@ -590,7 +593,7 @@ fn parse_insns(file: &mut File, insns_count: u32) -> Vec<u16> {
         .collect()
 }
 
-fn parse_debug_info(file: &mut File, data: &&DexFileData, offset: u32) -> Option<DebugInfo> {
+fn parse_debug_info(file: &mut File, data: &DexFileData, offset: u32) -> Option<DebugInfo> {
     if offset == 0 {
         return None;
     }
@@ -599,7 +602,7 @@ fn parse_debug_info(file: &mut File, data: &&DexFileData, offset: u32) -> Option
         .expect(format!("Failed to seek to debug_info offset {}", offset).as_str());
 
     let line_start = file.read_uleb128().expect("Failed to read line_start");
-    let parameter_names = parse_parameter_names(file, &data);
+    let parameter_names = parse_parameter_names(file, data);
     let bytecode = parse_debug_item_bytecodes(file);
 
     Some(DebugInfo {
@@ -609,7 +612,7 @@ fn parse_debug_info(file: &mut File, data: &&DexFileData, offset: u32) -> Option
     })
 }
 
-fn parse_parameter_names(file: &mut File, data: &&&DexFileData) -> Vec<Option<Rc<String>>> {
+fn parse_parameter_names(file: &mut File, data: &DexFileData) -> Vec<Option<Rc<String>>> {
     let size = file.read_uleb128().expect("Failed to read parameter_names size");
     (0..size)
         .map(|_| {
