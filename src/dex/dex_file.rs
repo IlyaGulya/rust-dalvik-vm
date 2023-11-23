@@ -335,7 +335,7 @@ pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
             .expect(format!("Failed to seek to string data position {}",
                             string_id.offset).as_str());
         let utf16_size = file.read_uleb128().expect("Failed to read string data size");
-        Rc::new(file.read_mutf8(utf16_size).expect("Failed to read string data"))
+        Rc::new(file.read_mutf8(utf16_size).expect(format!("Failed to read string data of size {} at {}", utf16_size, string_id.offset).as_str()))
     }).collect();
     let type_identifiers: Vec<_> = raw.type_ids.iter().map(|type_id| {
         string_data[type_id.descriptor_idx as usize].clone()

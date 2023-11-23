@@ -109,6 +109,6 @@ impl MUtf8Ext for fs::File {
         self.read_exact(&mut buffer)?;
         MString::from_mutf8(buffer)
             .into_string()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, ""))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }

@@ -323,7 +323,7 @@ pub fn parse_raw_dex_file(path: &str) -> RawDexFile {
     let short_header = parse_short_header(&mut reader);
     checksum(&mut reader, short_header.checksum);
 
-    file = open_file("tests/vm/hello.dex");
+    file = open_file(path);
     reader = EndianAwareFileReader::Little(
         LittleEndianReader {
             inner: file,
