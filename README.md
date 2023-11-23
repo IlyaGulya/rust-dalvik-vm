@@ -11,6 +11,7 @@ This is a project I'm writing purely for educational purposes.
 - [ ] Be able to interpret simple DEX file (`hello.dex` in `tests/vm/hello.dex`, compiled
   from `tests/interpreter/hello.smali`)
 - [ ] Add more tests for DEX file parser.
+- [ ] Fix endianness support in DEX file parser. (currently it's only partial).
 - [ ] Memory allocations?
 - [ ] Garbage collection?
 - [ ] JIT?
@@ -18,6 +19,13 @@ This is a project I'm writing purely for educational purposes.
 - [ ] JNI?
 - [ ] Debugging?
 - [ ] Something else I'm currently not aware of 😀
+
+## Prerequisites
+
+- MacOS / Linux
+- Proguard (`brew install proguard` on MacOS)
+- Android SDK (required for `d8`)
+- `ANDROID_HOME` or `ANDROID_SDK_ROOT` environment variable pointing to Android SDK directory
 
 ## Project structure
 

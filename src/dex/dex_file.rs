@@ -1,11 +1,15 @@
 use std::fs::File;
 use std::io;
-use std::io::{Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::rc::Rc;
 
 use bitmask_enum::bitmask;
+use bitstream_io::{BitRead, BitReader};
 use byteorder::{LittleEndian, ReadBytesExt};
 
+use Instruction::NOP;
+
+use crate::bytecode::instructions::{BinaryOpLit16, BinaryOpLit16Data, ConstOp, Instruction, InvokeOp, InvokeOpData, StaticFieldOp, StaticFieldOpData};
 use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
 use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
 
@@ -13,7 +17,7 @@ use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawCla
 pub struct DexFile {
     pub header: Header,
     pub data: DexFileData,
-    pub classes: Vec<ClassDefinition>,
+    pub classes: Vec<Rc<ClassDefinition>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -34,7 +38,7 @@ pub struct Header {
     pub endianness: Endianness,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub struct Prototype {
     pub shorty: Rc<String>,
     pub return_type: Rc<String>,
@@ -53,6 +57,22 @@ pub struct Method {
     pub definer: Rc<String>,
     pub prototype: Rc<Prototype>,
     pub name: Rc<String>,
+}
+
+impl Method {
+    pub fn full_descriptor(&self) -> String {
+        let mut descriptor = String::new();
+
+        descriptor.push('(');
+
+        for parameter in &self.prototype.parameters {
+            descriptor.push_str(parameter);
+        }
+        descriptor.push(')');
+        descriptor.push_str(self.prototype.return_type.as_str());
+
+        descriptor
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -129,10 +149,10 @@ impl TryInto<Visibility> for u8 {
 
 #[derive(Debug, PartialEq)]
 pub struct ClassData {
-    pub static_fields: Vec<EncodedField>,
-    pub instance_fields: Vec<EncodedField>,
-    pub direct_methods: Vec<EncodedMethod>,
-    pub virtual_methods: Vec<EncodedMethod>,
+    pub static_fields: Vec<Rc<EncodedField>>,
+    pub instance_fields: Vec<Rc<EncodedField>>,
+    pub direct_methods: Vec<Rc<EncodedMethod>>,
+    pub virtual_methods: Vec<Rc<EncodedMethod>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -145,7 +165,7 @@ pub struct EncodedField {
 pub struct EncodedMethod {
     pub method: Rc<Method>,
     pub access_flags: AccessFlags,
-    pub code: Option<Code>,
+    pub code: Option<Rc<Code>>,
 }
 
 // Docs: code_item
@@ -158,7 +178,7 @@ pub struct Code {
     // number of words of outgoing argument space
     pub outs_size: u16,
     pub debug_info: Option<DebugInfo>,
-    pub insns: Vec<u16>,
+    pub instructions: Vec<Instruction>,
     pub tries: Vec<TryItem>,
     pub handlers: Vec<EncodedCatchHandler>,
 }
@@ -166,7 +186,7 @@ pub struct Code {
 // Docs: try_item
 #[derive(Debug, PartialEq)]
 pub struct TryItem {
-    pub code_units: Vec<u16>,
+    pub code_units: Vec<Instruction>,
     pub handler: EncodedCatchHandler,
 }
 
@@ -363,34 +383,35 @@ pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
             file_size: raw.header.file_size,
             endianness: raw.header.endianness,
         },
-        data: data,
-        classes: classes,
+        data,
+        classes,
     };
 }
 
-fn parse_classes(file: &mut File, data: &DexFileData, class_defs: &Vec<RawClassDef>) -> Vec<ClassDefinition> {
+fn parse_classes(file: &mut File, data: &DexFileData, class_defs: &Vec<RawClassDef>) -> Vec<Rc<ClassDefinition>> {
     class_defs.iter().map(|class_def| {
-        let annotations = parse_annotations(file, &data, class_def.annotations_off);
-        ClassDefinition {
-            class_type: data.type_identifiers[class_def.class_idx as usize].clone(),
-            access_flags: AccessFlags {
-                bits: class_def.access_flags,
-            },
-            superclass: if class_def.class_idx != NO_INDEX {
-                Some(data.type_identifiers[class_def.superclass_idx as usize].clone())
-            } else { None },
-            interfaces: parse_type_list(file, &data.type_identifiers, class_def.interfaces_off),
-            source_file_name: if class_def.source_file_idx != NO_INDEX {
-                Some(data.string_data[class_def.source_file_idx as usize].clone())
-            } else { None },
-            annotations: None, // TODO parse annotations
-            class_data: parse_class_data(
-                file,
-                &data,
-                class_def.class_data_off,
-            ),
-            static_values: vec![],
-        }
+        Rc::new(
+            ClassDefinition {
+                class_type: data.type_identifiers[class_def.class_idx as usize].clone(),
+                access_flags: AccessFlags {
+                    bits: class_def.access_flags,
+                },
+                superclass: if class_def.class_idx != NO_INDEX {
+                    Some(data.type_identifiers[class_def.superclass_idx as usize].clone())
+                } else { None },
+                interfaces: parse_type_list(file, &data.type_identifiers, class_def.interfaces_off),
+                source_file_name: if class_def.source_file_idx != NO_INDEX {
+                    Some(data.string_data[class_def.source_file_idx as usize].clone())
+                } else { None },
+                annotations: parse_annotations(file, &data, class_def.annotations_off),
+                class_data: parse_class_data(
+                    file,
+                    &data,
+                    class_def.class_data_off,
+                ),
+                static_values: vec![],
+            }
+        )
     }).collect()
 }
 
@@ -474,7 +495,7 @@ fn parse_raw_encoded_methods(file: &mut File, size: u64) -> Vec<RawEncodedMethod
     })
 }
 
-fn parse_encoded_fields(fields: Vec<RawEncodedField>, data: &DexFileData) -> Vec<EncodedField> {
+fn parse_encoded_fields(fields: Vec<RawEncodedField>, data: &DexFileData) -> Vec<Rc<EncodedField>> {
     fields
         .iter()
         .map(|field| {
@@ -485,10 +506,11 @@ fn parse_encoded_fields(fields: Vec<RawEncodedField>, data: &DexFileData) -> Vec
                 },
             }
         })
+        .map(|field| Rc::new(field))
         .collect()
 }
 
-fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: &DexFileData) -> Vec<EncodedMethod> {
+fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: &DexFileData) -> Vec<Rc<EncodedMethod>> {
     methods
         .iter()
         .map(|raw| {
@@ -501,7 +523,7 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
                 method: method.clone(),
                 access_flags,
                 code: if raw.code_off != 0 {
-                    Some(parse_code(file, data, raw.code_off))
+                    Some(Rc::new(parse_code(file, data, raw.code_off)))
                 } else {
                     let is_abstract = access_flags.contains(AccessFlags::ACC_ABSTRACT);
                     let is_native = access_flags.contains(AccessFlags::ACC_NATIVE);
@@ -512,6 +534,7 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
                 },
             }
         })
+        .map(|method| Rc::new(method))
         .collect()
 }
 
@@ -525,9 +548,9 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
     let tries_size = file.read_u16::<LittleEndian>().expect("Failed to read tries_size");
     let debug_info_offset = file.read_u32::<LittleEndian>().expect("Failed to read debug_info offset");
     let insns_count = file.read_u32::<LittleEndian>().expect("Failed to read insns_count");
-    let insns = parse_insns(file, insns_count);
+    let raw_insns = parse_raw_insns(file, insns_count);
 
-    let tries = parse_tries(file, tries_size);
+    let tries = parse_tries(file, tries_size, data);
 
     let debug_info = parse_debug_info(file, data, debug_info_offset);
     Code {
@@ -535,14 +558,120 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
         ins_size: ins_size,
         outs_size: outs_size,
         debug_info: debug_info,
-        insns: insns,
+        instructions: parse_instructions(raw_insns, data),
         tries: tries,
         handlers: vec![],
     }
 }
 
-fn parse_tries(file: &mut File, tries_size: u16) -> Vec<TryItem> {
-    if (tries_size == 0) {
+fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Instruction> {
+    // TODO: Not sure how to respect endianness inside single instruction. Currently parsing in little-endian only.
+    let slice = raw_instructions.as_slice();
+    // TODO: BitReader reads in big-endian only. Need to implement custom reader or create pull request to BitReader.
+    let mut reader = BufReader::new(slice);
+    let mut result = vec![];
+
+    loop {
+        let opcode = reader.read_u8();
+        if opcode.is_err() {
+            break;
+        }
+        let opcode = opcode.unwrap();
+        result.push(
+            match opcode {
+                0x00 => NOP,
+                0x0e => Instruction::RETURN_VOID.also(|_| {
+                    reader.read_u8().expect("Failed to read padding");
+                }),
+                0x10 => Instruction::RETURN_WIDE(
+                    reader.read_u8().expect("Failed to read return register")
+                ),
+                0x1a => {
+                    Instruction::ConstOp(
+                        ConstOp::CONST_STRING {
+                            register: reader.read_u8().expect("Failed to read register"),
+                            string: data.string_data[
+                                reader
+                                    .read_u16::<LittleEndian>()
+                                    .expect("Failed to read string_id") as usize
+                                ].clone(),
+                        }
+                    )
+                }
+                0x60..=0x6d => {
+                    let data = StaticFieldOpData {
+                        register: reader.read_u8().expect("Failed to read register"),
+                        field: data.fields[
+                            reader
+                                .read_u16::<LittleEndian>()
+                                .expect("Failed to read field_id") as usize
+                            ].clone(),
+                    };
+                    Instruction::StaticOp(
+                        match opcode {
+                            0x60 => StaticFieldOp::SGET(data),
+                            0x62 => StaticFieldOp::SGET_OBJECT(data),
+                            _ => panic!("Unsupported opcode: 0x{:02x?}", opcode)
+                        }
+                    )
+                }
+                0x6e..=0x72 => {
+                    let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                    let register_G = reader.read::<u8>(4).expect("Failed to read arg_count");
+                    let arg_count = reader.read::<u8>(4).expect("Failed to read G");
+                    let method_id = reader.read::<u16>(16).expect("Failed to read method_id");
+                    let mut registers: Vec<u8> = (0..arg_count).map(|_| {
+                        reader.read::<u8>(4).expect("Failed to read arg_register")
+                    }).collect();
+                    if arg_count == 5 {
+                        registers.push(register_G);
+                    }
+                    let data = InvokeOpData {
+                        method: data.methods[method_id as usize].clone(),
+                        args_registers: registers,
+                    };
+
+                    match opcode {
+                        0x6e => Instruction::InvokeOp(InvokeOp::INVOKE_VIRTUAL(data)),
+                        0x6f => Instruction::InvokeOp(InvokeOp::INVOKE_SUPER(data)),
+                        0x70 => Instruction::InvokeOp(InvokeOp::INVOKE_DIRECT(data)),
+                        0x71 => Instruction::InvokeOp(InvokeOp::INVOKE_STATIC(data)),
+                        0x72 => Instruction::InvokeOp(InvokeOp::INVOKE_INTERFACE(data)),
+                        _ => panic!("Unreachable")
+                    }
+                }
+                0xd8..=0xe2 => {
+                    let data = BinaryOpLit16Data {
+                        dest: reader.read_u8().expect("Failed to read dest"),
+                        src: reader.read_u8().expect("Failed to read src"),
+                        literal: reader.read_u16::<LittleEndian>().expect("Failed to read literal"),
+                    };
+
+                    match opcode {
+                        0xd8 => Instruction::BinaryOpLit16(BinaryOpLit16::ADD_INT_LIT16(data)),
+                        0xd9 => Instruction::BinaryOpLit16(BinaryOpLit16::RSUB_INT(data)),
+                        0xda => Instruction::BinaryOpLit16(BinaryOpLit16::MUL_INT_LIT16(data)),
+                        0xdb => Instruction::BinaryOpLit16(BinaryOpLit16::DIV_INT_LIT16(data)),
+                        0xdc => Instruction::BinaryOpLit16(BinaryOpLit16::REM_INT_LIT16(data)),
+                        0xdd => Instruction::BinaryOpLit16(BinaryOpLit16::AND_INT_LIT16(data)),
+                        0xde => Instruction::BinaryOpLit16(BinaryOpLit16::OR_INT_LIT16(data)),
+                        0xdf => Instruction::BinaryOpLit16(BinaryOpLit16::XOR_INT_LIT16(data)),
+                        0xe0 => Instruction::BinaryOpLit16(BinaryOpLit16::SHL_INT_LIT16(data)),
+                        0xe1 => Instruction::BinaryOpLit16(BinaryOpLit16::SHR_INT_LIT16(data)),
+                        0xe2 => Instruction::BinaryOpLit16(BinaryOpLit16::USHR_INT_LIT16(data)),
+                        _ => panic!("Unreachable")
+                    }
+                }
+                _ => panic!("Unsupported opcode: 0x{:02x?}", opcode)
+            }
+        )
+    }
+
+    result
+}
+
+fn parse_tries(file: &mut File, tries_size: u16, data: &DexFileData) -> Vec<TryItem> {
+    if tries_size == 0 {
         return vec![];
     }
     file.seek(SeekFrom::Current(2)).expect("Failed to skip tries padding");
@@ -554,9 +683,9 @@ fn parse_tries(file: &mut File, tries_size: u16) -> Vec<TryItem> {
             let handler_offset = file.read_u16::<LittleEndian>().expect("Failed to read handler_offset");
 
             file.seek(SeekFrom::Start(start_addr as u64)).expect("Failed to skip tries padding");
-            let code_units = parse_insns(file, insn_count as u32);
+            let code_units = parse_raw_insns(file, insn_count as u32);
             TryItem {
-                code_units,
+                code_units: parse_instructions(code_units, data),
                 handler: parse_encoded_catch_handler(file, handler_offset),
             }
         })
@@ -587,10 +716,11 @@ fn parse_encoded_catch_handler(file: &mut File, handler_offset: u16) -> EncodedC
     }
 }
 
-fn parse_insns(file: &mut File, insns_count: u32) -> Vec<u16> {
-    (0..insns_count)
-        .map(|_| file.read_u16::<LittleEndian>().expect("Failed to read insn"))
-        .collect()
+fn parse_raw_insns(file: &mut File, insns_count: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; (insns_count * 2) as usize];
+    let position = file.stream_position();
+    file.read_exact(buf.as_mut_slice()).expect("Failed to read instructions");
+    buf
 }
 
 fn parse_debug_info(file: &mut File, data: &DexFileData, offset: u32) -> Option<DebugInfo> {
@@ -648,14 +778,9 @@ fn parse_debug_item_bytecodes(file: &mut File) -> Vec<DebugItemBytecodes> {
     bytecodes
 }
 
-fn parse_annotations(file: &mut File, data: &DexFileData, offset: u32) -> Annotations {
+fn parse_annotations(file: &mut File, data: &DexFileData, offset: u32) -> Option<Annotations> {
     if offset == 0 {
-        return Annotations {
-            class_annotations: vec![],
-            field_annotations: vec![],
-            method_annotations: vec![],
-            parameter_annotations: vec![],
-        };
+        return None;
     }
     file.seek(SeekFrom::Start(offset as u64))
         .expect(format!("Failed to seek to annotations_off position {}", offset).as_str());
@@ -719,19 +844,21 @@ fn parse_annotations(file: &mut File, data: &DexFileData, offset: u32) -> Annota
 
     let raw_class_annotation_set = parse_raw_annotation_set(file, class_annotations_offset);
 
-    Annotations {
-        class_annotations: raw_class_annotation_set.annotation_offsets.into_iter().map(|annotation_offset| {
-            let item = parse_annotation_item(file, data, annotation_offset);
-            ClassAnnotation {
-                visibility: item.visibility,
-                type_: item.type_.clone(),
-                elements: item.elements,
-            }
-        }).collect(),
-        field_annotations,
-        method_annotations,
-        parameter_annotations,
-    }
+    Some(
+        Annotations {
+            class_annotations: raw_class_annotation_set.annotation_offsets.into_iter().map(|annotation_offset| {
+                let item = parse_annotation_item(file, data, annotation_offset);
+                ClassAnnotation {
+                    visibility: item.visibility,
+                    type_: item.type_.clone(),
+                    elements: item.elements,
+                }
+            }).collect(),
+            field_annotations,
+            method_annotations,
+            parameter_annotations,
+        }
+    )
 }
 
 fn parse_raw_annotation_set(file: &mut File, offset: u32) -> RawAnnotationSet {
