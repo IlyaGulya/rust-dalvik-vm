@@ -1,5 +1,5 @@
 use std::{fs, io};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 
 use buffered_reader::{BufferedReader, File};
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
@@ -105,10 +105,21 @@ pub trait MUtf8Ext: io::Read {
 
 impl MUtf8Ext for fs::File {
     fn read_mutf8(&mut self, length: u64) -> Result<String, io::Error> {
-        let mut buffer = vec![0; length as usize];
-        self.read_exact(&mut buffer)?;
-        MString::from_mutf8(buffer)
-            .into_string()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let mut reader = BufReader::new(self);
+        let mut buffer = vec![];
+        reader
+            .read_until(0x00, &mut buffer)?;
+
+        buffer.pop().expect("Unable to remove trailing 0x00");
+
+        let utf8 =
+            MString::from_mutf8(buffer)
+                .into_string()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let code_point_count = utf8.chars().count();
+        assert_eq!(length as usize, code_point_count);
+
+        Ok(utf8)
     }
 }
