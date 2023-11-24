@@ -12,7 +12,7 @@ use Instruction::NOP;
 use crate::bytecode::formats::Format35c;
 use crate::bytecode::instructions::{BinaryOpLit16, BinaryOpLit16Data, ConstOp, Instruction, InvokeOp, InvokeOpData, StaticFieldOp, StaticFieldOpData};
 use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
-use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
+use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation, RawTryItem};
 
 #[derive(Debug, PartialEq)]
 pub struct DexFile {
@@ -551,7 +551,12 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
     let insns_count = file.read_u32::<LittleEndian>().expect("Failed to read insns_count");
     let raw_insns = parse_raw_insns(file, insns_count);
 
-    let tries = parse_tries(file, tries_size, data);
+    if tries_size != 0 && insns_count % 2 != 0 {
+        file.read_u16::<LittleEndian>().expect("Failed to skip padding");
+    }
+
+    let raw_tries = parse_raw_tries(file, tries_size);
+    let tries = parse_tries(file, raw_tries, data);
 
     let debug_info = parse_debug_info(file, data, debug_info_offset);
     Code {
@@ -663,23 +668,34 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
     result
 }
 
-fn parse_tries(file: &mut File, tries_size: u16, data: &DexFileData) -> Vec<TryItem> {
+fn parse_raw_tries(file: &mut File, tries_size: u16) -> Vec<RawTryItem> {
     if tries_size == 0 {
         return vec![];
     }
-    file.seek(SeekFrom::Current(2)).expect("Failed to skip tries padding");
 
-    (0..tries_size)
-        .map(|_| {
-            let start_addr = file.read_u32::<LittleEndian>().expect("Failed to read start_addr");
-            let insn_count = file.read_u16::<LittleEndian>().expect("Failed to read insn_count");
-            let handler_offset = file.read_u16::<LittleEndian>().expect("Failed to read handler_offset");
+    file.parse_list(tries_size as u64, |file| {
+        let start_addr = file.read_u32::<LittleEndian>().expect("Failed to read start_addr");
+        let insn_count = file.read_u16::<LittleEndian>().expect("Failed to read insn_count");
+        let handler_off = file.read_u16::<LittleEndian>().expect("Failed to read handler_offset");
 
-            file.seek(SeekFrom::Start(start_addr as u64)).expect("Failed to skip tries padding");
-            let code_units = parse_raw_insns(file, insn_count as u32);
+        RawTryItem {
+            start_addr,
+            insn_count,
+            handler_off,
+        }
+    })
+}
+
+fn parse_tries(file: &mut File, raw_tries: Vec<RawTryItem>, data: &DexFileData) -> Vec<TryItem> {
+    raw_tries
+        .iter()
+        .map(|raw_try| {
+            file.seek(SeekFrom::Start(raw_try.start_addr as u64))
+                .expect("Failed to seek to try start address");
+            let code_units = parse_raw_insns(file, raw_try.insn_count as u32);
             TryItem {
                 code_units: parse_instructions(code_units, data),
-                handler: parse_encoded_catch_handler(file, handler_offset),
+                handler: parse_encoded_catch_handler(file, raw_try.handler_off),
             }
         })
         .collect()
