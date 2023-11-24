@@ -19,7 +19,7 @@ mod runtime;
 fn main() {
     let mut runtime = Runtime::default();
 
-    // runtime.load_dex("toolkit/runtime.dex");
+    runtime.load_dex("toolkit/runtime.dex");
     runtime.load_dex("tests/vm/hello.dex");
 
     let main_class_name = "HelloWorld";

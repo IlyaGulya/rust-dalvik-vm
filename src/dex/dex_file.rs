@@ -1,6 +1,6 @@
+use std::{f64, io};
 use std::fs::File;
-use std::io;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
 
 use bitmask_enum::bitmask;
@@ -9,6 +9,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use Instruction::NOP;
 
+use crate::bytecode::formats::Format35c;
 use crate::bytecode::instructions::{BinaryOpLit16, BinaryOpLit16Data, ConstOp, Instruction, InvokeOp, InvokeOpData, StaticFieldOp, StaticFieldOpData};
 use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
 use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
@@ -396,7 +397,7 @@ fn parse_classes(file: &mut File, data: &DexFileData, class_defs: &Vec<RawClassD
                 access_flags: AccessFlags {
                     bits: class_def.access_flags,
                 },
-                superclass: if class_def.class_idx != NO_INDEX {
+                superclass: if class_def.superclass_idx != NO_INDEX {
                     Some(data.type_identifiers[class_def.superclass_idx as usize].clone())
                 } else { None },
                 interfaces: parse_type_list(file, &data.type_identifiers, class_def.interfaces_off),
@@ -617,18 +618,10 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 }
                 0x6e..=0x72 => {
                     let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
-                    let register_G = reader.read::<u8>(4).expect("Failed to read arg_count");
-                    let arg_count = reader.read::<u8>(4).expect("Failed to read G");
-                    let method_id = reader.read::<u16>(16).expect("Failed to read method_id");
-                    let mut registers: Vec<u8> = (0..arg_count).map(|_| {
-                        reader.read::<u8>(4).expect("Failed to read arg_register")
-                    }).collect();
-                    if arg_count == 5 {
-                        registers.push(register_G);
-                    }
+                    let format = Format35c::parse(&mut reader);
                     let data = InvokeOpData {
-                        method: data.methods[method_id as usize].clone(),
-                        args_registers: registers,
+                        method: data.methods[format.bbbb as usize].clone(),
+                        args_registers: format.reg_list,
                     };
 
                     match opcode {
@@ -937,28 +930,116 @@ fn parse_annotation_item(file: &mut File, data: &DexFileData, offset: u32) -> An
 }
 
 fn parse_encoded_value(file: &mut File, data: &DexFileData) -> EncodedValue {
-    let value_type = file.read_u8().expect("Failed to read value_type");
+    let header = &file.read_u8().expect("Failed to read value type and arg");
+    let value_arg = (header >> 5) as usize;
+    let value_type = 0b0001_1111 & header;
+    let mut bit_reader = BitReader::endian(file, bitstream_io::LittleEndian);
+    let size_bytes = (value_arg + 1) as u32;
+    let size_bits = (size_bytes) * 8;
     match value_type {
-        0x00 => EncodedValue::Byte(file.read_u8().expect("Failed to read byte")),
-        0x02 => EncodedValue::Short(file.read_i16::<LittleEndian>().expect("Failed to read short")),
-        0x03 => EncodedValue::Char(file.read_u16::<LittleEndian>().expect("Failed to read char")),
-        0x04 => EncodedValue::Int(file.read_i32::<LittleEndian>().expect("Failed to read int")),
-        0x06 => EncodedValue::Long(file.read_i64::<LittleEndian>().expect("Failed to read long")),
-        0x10 => EncodedValue::Float(file.read_f32::<LittleEndian>().expect("Failed to read float")),
-        0x11 => EncodedValue::Double(file.read_f64::<LittleEndian>().expect("Failed to read double")),
-        0x15 => EncodedValue::MethodType(data.prototypes[file.read_u32::<LittleEndian>().expect("Failed to read method_type_idx") as usize].clone()),
-        0x16 => EncodedValue::MethodHandle(data.methods[file.read_u32::<LittleEndian>().expect("Failed to read method_handle_idx") as usize].clone()),
-        0x17 => EncodedValue::String(data.string_data[file.read_u32::<LittleEndian>().expect("Failed to read string_idx") as usize].clone()),
-        0x18 => EncodedValue::Type(data.type_identifiers[file.read_u32::<LittleEndian>().expect("Failed to read type_idx") as usize].clone()),
-        0x19 => EncodedValue::Field(data.fields[file.read_u32::<LittleEndian>().expect("Failed to read field_idx") as usize].clone()),
-        0x1a => EncodedValue::Method(data.methods[file.read_u32::<LittleEndian>().expect("Failed to read method_idx") as usize].clone()),
-        0x1b => EncodedValue::Enum(data.fields[file.read_u32::<LittleEndian>().expect("Failed to read field_idx") as usize].clone()),
-        0x1c => EncodedValue::Array(parse_encoded_array(file, data)),
-        0x1d => EncodedValue::Annotation(parse_encoded_annotation(file, data)),
-        0x1e => EncodedValue::Null,
-        0x1f => EncodedValue::Boolean(file.read_u8().expect("Failed to read boolean") != 0),
-        _ => panic!("Invalid encoded value type: {}", value_type),
+        0x00 => {
+            debug_assert!(value_arg == 0);
+            EncodedValue::Byte(bit_reader.read::<u8>(8).expect("Failed to read byte"))
+        }
+        0x02 => {
+            debug_assert!(value_arg < 2);
+            EncodedValue::Short(bit_reader.read(size_bits).expect("Failed to read short"))
+        }
+        0x03 => {
+            debug_assert!(value_arg < 2);
+            EncodedValue::Char(bit_reader.read(size_bits).expect("Failed to read char"))
+        }
+        0x04 => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::Int(bit_reader.read(size_bits).expect("Failed to read int"))
+        }
+        0x06 => {
+            debug_assert!(value_arg < 8);
+            EncodedValue::Long(bit_reader.read(size_bits).expect("Failed to read long"))
+        }
+        0x10 => {
+            debug_assert!(value_arg < 4);
+            let buf: Vec<u8> =
+                read_value(bit_reader.into_reader(), size_bytes as usize, true)
+                    .expect("Failed to read double");
+
+            let mut extended_buf = [0u8; 4];
+            extended_buf[..buf.len()].copy_from_slice(&buf);
+            let mut cursor = Cursor::new(extended_buf);
+
+            EncodedValue::Float(cursor.read_f32::<LittleEndian>().expect("Failed to read float"))
+        }
+        0x11 => {
+            debug_assert!(value_arg < 8);
+            let buf: Vec<u8> =
+                read_value(bit_reader.into_reader(), size_bytes as usize, true)
+                    .expect("Failed to read double");
+
+            let mut extended_buf = [0u8; 8];
+            extended_buf[..buf.len()].copy_from_slice(&buf);
+            let mut cursor = Cursor::new(extended_buf);
+
+            EncodedValue::Double(cursor.read_f64::<LittleEndian>().expect("Failed to read double"))
+        }
+        0x15 => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::MethodType(data.prototypes[bit_reader.read::<u32>(size_bits).expect("Failed to read method_type_idx") as usize].clone())
+        }
+        0x16 => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::MethodHandle(data.methods[bit_reader.read::<u32>(size_bits).expect("Failed to read method_handle_idx") as usize].clone())
+        }
+        0x17 => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::String(data.string_data[bit_reader.read::<u32>(size_bits).expect("Failed to read string_idx") as usize].clone())
+        }
+        0x18 => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::Type(data.type_identifiers[bit_reader.read::<u32>(size_bits).expect("Failed to read type_idx") as usize].clone())
+        }
+        0x19 => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::Field(data.fields[bit_reader.read::<u32>(size_bits).expect("Failed to read field_idx") as usize].clone())
+        }
+        0x1a => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::Method(data.methods[bit_reader.read::<u32>(size_bits).expect("Failed to read method_idx") as usize].clone())
+        }
+        0x1b => {
+            debug_assert!(value_arg < 4);
+            EncodedValue::Enum(data.fields[bit_reader.read::<u32>(size_bits).expect("Failed to read field_idx") as usize].clone())
+        }
+        0x1c => {
+            debug_assert!(value_arg == 0);
+            EncodedValue::Array(parse_encoded_array(bit_reader.into_reader(), data))
+        }
+        0x1d => {
+            debug_assert!(value_arg == 0);
+            EncodedValue::Annotation(parse_encoded_annotation(bit_reader.into_reader(), data))
+        }
+        0x1e => {
+            debug_assert!(value_arg == 0);
+            EncodedValue::Null
+        }
+        0x1f => {
+            debug_assert!(value_arg < 2);
+            EncodedValue::Boolean(value_arg != 0)
+        }
+        _ => {
+            panic!("Invalid encoded value type {} at {}", value_type, bit_reader.into_reader().stream_position().expect("Unable to read stream position"))
+        }
     }
+}
+
+fn read_value<R: Read>(reader: &mut R, size: usize, sign_extend: bool) -> io::Result<Vec<u8>> {
+    let mut buf = vec![0u8; size];
+    reader.read_exact(&mut buf[..size])?;
+    if sign_extend && buf[size - 1] & 0x80 != 0 {
+        for byte in &mut buf[size..] {
+            *byte = 0xFF;
+        }
+    }
+    Ok(buf)
 }
 
 fn parse_encoded_array(file: &mut File, data: &DexFileData) -> Vec<EncodedValue> {
@@ -981,7 +1062,7 @@ fn parse_encoded_annotation(file: &mut File, data: &DexFileData) -> EncodedAnnot
 
 fn parse_annotation_elements(file: &mut File, data: &DexFileData, size: u64) -> Vec<AnnotationElement> {
     file.parse_list(size, |file| {
-        let name_idx = file.read_u32::<LittleEndian>().expect("Failed to read name_idx");
+        let name_idx = file.read_uleb128().expect("Failed to read name_idx");
         let value = parse_encoded_value(file, data);
         AnnotationElement {
             name: data.string_data[name_idx as usize].clone(),
