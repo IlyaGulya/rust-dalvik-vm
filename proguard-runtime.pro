@@ -14,6 +14,9 @@
 -keep class java.io.OutputStream {
     *;
 }
+-keep class java.lang.System {
+    *;
+}
 
 # Allow optimization, obfuscation, and preverification to be performed.
 -optimizationpasses 5
