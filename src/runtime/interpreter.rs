@@ -21,14 +21,15 @@ impl Interpreter {
             match instruction {
                 // Instruction::NOP => {}
                 // Instruction::RETURN_VOID =>
-                Instruction::ConstOp(instruction) => {
+                Instruction::Const(instruction) => {
                     match instruction {
-                        ConstOp::CONST_STRING { register, string } => {
+                        ConstOp::CONST_STRING { dest_register: register, string } => {
                             frame.set_register(*register, Value::String(string.clone()));
                         }
+                        instruction => panic!("Not implemented: {:?}", instruction)
                     }
                 }
-                Instruction::StaticOp(instruction) => {
+                Instruction::Static(instruction) => {
                     match instruction {
                         // StaticFieldOp::SGET(_) => {}
                         // StaticFieldOp::SPUT(_) => {}
@@ -36,7 +37,7 @@ impl Interpreter {
                         instruction => panic!("Not implemented: {:?}", instruction)
                     }
                 }
-                Instruction::InvokeOp(instruction) => {
+                Instruction::Invoke(instruction) => {
                     match instruction {
                         InvokeOp::INVOKE_VIRTUAL(instruction) => {
                             let args: Vec<Value> =

@@ -141,37 +141,6 @@ pub struct RawParameterAnnotation {
     pub annotations_offset: u32,
 }
 
-// Docs: code_item
-#[derive(Debug, PartialEq)]
-pub struct RawCodeItem {
-    // number of registers used by this code
-    pub registers_size: u16,
-    // number of words of incoming arguments
-    pub ins_size: u16,
-    // number of words of outgoing argument space
-    pub outs_size: u16,
-    pub tries_size: u16,
-    pub debug_info_off: u32,
-    pub insns_size: u32,
-    pub insns: Vec<u16>,
-    pub padding: Option<u16>,
-    pub tries: Option<Vec<RawTryItem>>,
-    // missing the handler here: need to break up processing to handle handler_off for try_item's
-}
-
-
-// Docs: try_item
-#[derive(Debug, PartialEq)]
-pub struct RawTryItem {
-    // start address of the block of code covered by this entry
-    // a count of 16-bit code units to the start of the first covered instruction
-    pub start_addr: u32,
-    // number of 16-bit code units covered by this entry
-    pub insn_count: u16,
-    // offset to the individual handler within the encoded_catch_handler_list block for the associated code_item
-    pub handler_off: u16,
-}
-
 #[derive(Debug)]
 pub struct RawDexFile {
     pub header: RawHeader,

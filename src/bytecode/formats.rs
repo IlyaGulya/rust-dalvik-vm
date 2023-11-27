@@ -1,6 +1,7 @@
-use std::io::Read;
+use std::io::{BufReader, Read};
 
 use bitstream_io::{BitRead, BitReader, LittleEndian};
+use byteorder::ReadBytesExt;
 
 // Format ØØ|op
 pub struct Format10x {
@@ -136,21 +137,27 @@ pub struct Format32x {
 
 // Format AA|op BBBBlo BBBBhi
 pub struct Format31i {
-    op: u8,
-    aa: u8,
-    bbbb: i32,
+    pub aa: u8,
+    pub bbbbbbbb: i32,
 }
 
 // Format 31t
 pub struct Format31t {
-    op: u8,
-    aa: u8,
-    bbbb: i32,
+    pub aa: u8,
+    pub bbbbbbbb: i32,
+}
+
+impl Format31t {
+    pub fn parse<R: Read>(reader: &mut BufReader<R>) -> Format31t {
+        return Format31t {
+            aa: reader.read_u8().expect("Failed to read AA"),
+            bbbbbbbb: reader.read_i32::<byteorder::LittleEndian>().expect("Failed to read BBBB"),
+        };
+    }
 }
 
 // Format 31c
 pub struct Format31c {
-    op: u8,
     aa: u8,
     bbbb: u32,
 }
@@ -167,9 +174,13 @@ impl Format35c where {
         let g = reader.read::<u8>(4).expect("Failed to read G");
         let arg_count = reader.read::<u8>(4).expect("Failed to read A");
         let bbbb = reader.read::<u16>(16).expect("Failed to read BBBB");
-        let mut registers: Vec<u8> = (0..arg_count).map(|_| {
-            reader.read::<u8>(4).expect("Failed to read arg_register")
-        }).collect();
+        let mut registers: Vec<u8> = vec![arg_count];
+        (0..4).for_each(|_| {
+            let reg = reader.read::<u8>(4).expect("Failed to read register");
+            if (registers.len() < arg_count as usize) {
+                registers.push(reg);
+            }
+        });
         if arg_count == 5 {
             registers.push(g);
         }
@@ -183,10 +194,23 @@ impl Format35c where {
 // Format AA|op BBBB CCCC
 // Same for 3rms and 3rmi
 pub struct Format3rc {
-    op: u8,
-    aa: u8,
-    bbbb: u16,
-    cccc: u16,
+    pub reg_count: u8,
+    pub bbbb: u16,
+    pub cccc: u16,
+}
+
+impl Format3rc {
+    pub fn parse<R: Read>(reader: &mut R) -> Format3rc {
+        let reg_count = reader.read_u8().expect("Failed to read reg_count");
+        println!("reg_count: {}", reg_count);
+        return Format3rc {
+            reg_count,
+            bbbb: reader.read_u16::<byteorder::LittleEndian>().expect(
+                format!("Failed to read bbbb for reg_count {}", reg_count).as_str(),
+            ),
+            cccc: reader.read_u16::<byteorder::LittleEndian>().expect("Failed to read cccc"),
+        };
+    }
 }
 
 // Format A|G|op BBBB F|E|D|C HHHH

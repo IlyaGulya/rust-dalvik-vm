@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::fs;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::rc::Rc;
@@ -17,6 +18,9 @@ mod runtime;
 
 
 fn main() {
+    // let buf = fs::read("toolkit/runtime.dex").unwrap();
+    // let dex = dexparser::parse(&buf);
+
     let mut runtime = Runtime::default();
 
     runtime.load_dex("toolkit/runtime.dex");

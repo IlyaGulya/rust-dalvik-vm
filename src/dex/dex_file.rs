@@ -1,4 +1,5 @@
 use std::{f64, io};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
@@ -7,12 +8,10 @@ use bitmask_enum::bitmask;
 use bitstream_io::{BitRead, BitReader};
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use Instruction::NOP;
-
-use crate::bytecode::formats::Format35c;
-use crate::bytecode::instructions::{BinaryOpLit16, BinaryOpLit16Data, ConstOp, Instruction, InvokeOp, InvokeOpData, StaticFieldOp, StaticFieldOpData};
+use crate::bytecode::formats::{Format31t, Format35c, Format3rc};
+use crate::bytecode::instructions::{ArrayOp, ArrayOpData, BinaryOp2Addr, BinaryOp2AddrData, BinaryOpLit16, BinaryOpLit16Data, BinaryOpLit8, BinaryOpLit8Data, CmpOp, CmpOpData, ConstOp, IfTestOp, IfTestOpData, IfTestZOp, IfTestZOpData, InstanceFieldOp, InstanceFieldOpData, Instruction, InvokeOp, InvokeOpData, InvokeRangeOp, InvokeRangeOpData, PackedSwitchTable, SparseSwitchTable, StaticFieldOp, StaticFieldOpData, UnaryOp, UnaryOpData};
 use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
-use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation, RawTryItem};
+use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
 
 #[derive(Debug, PartialEq)]
 pub struct DexFile {
@@ -172,6 +171,7 @@ pub struct EncodedMethod {
 // Docs: code_item
 #[derive(Debug, PartialEq)]
 pub struct Code {
+    pub file_offset: u64,
     // number of registers used by this code
     pub registers_size: u16,
     // number of words of incoming arguments
@@ -187,8 +187,9 @@ pub struct Code {
 // Docs: try_item
 #[derive(Debug, PartialEq)]
 pub struct TryItem {
-    pub code_units: Vec<Instruction>,
-    pub handler: EncodedCatchHandler,
+    pub start_addr: u32,
+    pub insn_count: u16,
+    pub handler_offset: u16,
 }
 
 // Docs: encoded_catch_handler
@@ -391,9 +392,10 @@ pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
 
 fn parse_classes(file: &mut File, data: &DexFileData, class_defs: &Vec<RawClassDef>) -> Vec<Rc<ClassDefinition>> {
     class_defs.iter().map(|class_def| {
+        let class = data.type_identifiers[class_def.class_idx as usize].clone();
         Rc::new(
             ClassDefinition {
-                class_type: data.type_identifiers[class_def.class_idx as usize].clone(),
+                class_type: class,
                 access_flags: AccessFlags {
                     bits: class_def.access_flags,
                 },
@@ -425,6 +427,8 @@ trait Parser: io::Read {
     }
 }
 
+impl<R: Read> Parser for R {}
+
 trait Also {
     fn also<F: FnOnce(&Self) -> ()>(self, f: F) -> Self where Self: Sized {
         f(&self);
@@ -434,7 +438,6 @@ trait Also {
 
 impl<T> Also for T {}
 
-impl Parser for File {}
 
 fn parse_class_data(
     file: &mut File,
@@ -491,7 +494,7 @@ fn parse_raw_encoded_methods(file: &mut File, size: u64) -> Vec<RawEncodedMethod
             access_flags: file.read_uleb128().expect("Failed to read access_flags") as u32,
             code_off: file.read_uleb128().expect("Failed to read code_off"),
         }.also(|_| {
-            prev_method_idx = method_idx_diff;
+            prev_method_idx += method_idx_diff;
         })
     })
 }
@@ -519,6 +522,11 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
             let access_flags = AccessFlags {
                 bits: raw.access_flags,
             };
+
+            if method.definer.as_str() == "Ljava/io/BufferedInputStream;" && method.name.as_str() == "available" {
+                println!("Parsing method: {:?}", method);
+            }
+            println!("Parsing method: {:?}", method);
 
             EncodedMethod {
                 method: method.clone(),
@@ -555,18 +563,23 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
         file.read_u16::<LittleEndian>().expect("Failed to skip padding");
     }
 
-    let raw_tries = parse_raw_tries(file, tries_size);
-    let tries = parse_tries(file, raw_tries, data);
+    let tries = parse_tries(file, tries_size);
+    let handlers = if tries.is_empty() {
+        vec![]
+    } else {
+        parse_handlers(file, data)
+    };
 
     let debug_info = parse_debug_info(file, data, debug_info_offset);
     Code {
+        file_offset: offset,
         registers_size: registers_size,
         ins_size: ins_size,
         outs_size: outs_size,
         debug_info: debug_info,
         instructions: parse_instructions(raw_insns, data),
         tries: tries,
-        handlers: vec![],
+        handlers: handlers,
     }
 }
 
@@ -574,135 +587,704 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
     // TODO: Not sure how to respect endianness inside single instruction. Currently parsing in little-endian only.
     let slice = raw_instructions.as_slice();
     // TODO: BitReader reads in big-endian only. Need to implement custom reader or create pull request to BitReader.
-    let mut reader = BufReader::new(slice);
+    let mut reader = BufReader::new(Cursor::new(slice));
     let mut result = vec![];
+    let mut packed_switch_tables: HashMap<u64, Rc<PackedSwitchTable>> = HashMap::new();
+    let mut sparse_switch_tables: HashMap<u64, Rc<SparseSwitchTable>> = HashMap::new();
 
     loop {
+        let instruction_pos = reader.stream_position().expect("Failed to get instruction position");
         let opcode = reader.read_u8();
         if opcode.is_err() {
             break;
         }
         let opcode = opcode.unwrap();
-        result.push(
-            match opcode {
-                0x00 => NOP,
-                0x0e => Instruction::RETURN_VOID.also(|_| {
-                    reader.read_u8().expect("Failed to read padding");
-                }),
-                0x10 => Instruction::RETURN_WIDE(
-                    reader.read_u8().expect("Failed to read return register")
-                ),
-                0x1a => {
-                    Instruction::ConstOp(
-                        ConstOp::CONST_STRING {
-                            register: reader.read_u8().expect("Failed to read register"),
-                            string: data.string_data[
-                                reader
-                                    .read_u16::<LittleEndian>()
-                                    .expect("Failed to read string_id") as usize
-                                ].clone(),
-                        }
-                    )
+        let instruction = match opcode {
+            0x00 => {
+                let padding = reader.read_u8().expect("Failed to read NOP padding");
+                match padding {
+                    0x01 => {
+                        let table =
+                            packed_switch_tables.get(&instruction_pos)
+                                .expect(&format!("Failed to get packed switch table for position {}", instruction_pos));
+
+                        let size_in_bytes = table.size_in_code_units * 2;
+                        let next_instruction_pos = instruction_pos + size_in_bytes as u64;
+                        reader.seek(SeekFrom::Start(next_instruction_pos))
+                            .expect(&format!("Failed to skip packed switch table and seek to next instruction position {}", next_instruction_pos));
+                        continue
+                    }
+                    0x02 => {
+                        let table =
+                            sparse_switch_tables.get(&instruction_pos)
+                                .expect(&format!("Failed to get packed switch table for position {}", instruction_pos));
+
+                        let size_in_bytes = table.size_in_code_units * 2;
+                        let next_instruction_pos = instruction_pos + size_in_bytes as u64;
+                        reader.seek(SeekFrom::Start(next_instruction_pos))
+                            .expect(&format!("Failed to skip sparse switch table and seek to next instruction position {}", next_instruction_pos));
+                        continue
+                    }
+                    0 => {} // correct padding
+                    _ => panic!("Invalid NOP padding: {}", padding)
                 }
-                0x60..=0x6d => {
-                    let data = StaticFieldOpData {
-                        register: reader.read_u8().expect("Failed to read register"),
-                        field: data.fields[
+                Instruction::NOP
+            }
+            0x01 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::MOVE {
+                    dest: reader.read::<u8>(4).expect("Failed to read dest"),
+                    src: reader.read::<u8>(4).expect("Failed to read src"),
+                }
+            }
+            0x02 => Instruction::MOVE_FROM16 {
+                dest: reader.read_u8().expect("Failed to read dest"),
+                src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
+            },
+            0x03 => Instruction::MOVE_16 {
+                dest: reader.read_u16::<LittleEndian>().expect("Failed to read dest"),
+                src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
+            },
+            0x04 => Instruction::MOVE_WIDE {
+                dest: reader.read_u8().expect("Failed to read dest"),
+                src: reader.read_u8().expect("Failed to read src"),
+            },
+            0x05 => Instruction::MOVE_WIDE_FROM16 {
+                dest: reader.read_u8().expect("Failed to read dest"),
+                src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
+            },
+            0x06 => Instruction::MOVE_WIDE_16 {
+                dest: reader.read_u16::<LittleEndian>().expect("Failed to read dest"),
+                src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
+            },
+            0x07 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::MOVE_OBJECT {
+                    dest: reader.read::<u8>(4).expect("Failed to read dest"),
+                    src: reader.read::<u8>(4).expect("Failed to read src"),
+                }
+            }
+            0x08 => Instruction::MOVE_OBJECT_FROM16 {
+                dest: reader.read_u8().expect("Failed to read dest"),
+                src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
+            },
+            0x09 => Instruction::MOVE_OBJECT_16 {
+                dest: reader.read_u16::<LittleEndian>().expect("Failed to read dest"),
+                src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
+            },
+            0x0a => Instruction::MOVE_RESULT(
+                reader.read_u8().expect("Failed to read dest")
+            ),
+            0x0b => Instruction::MOVE_RESULT_WIDE(
+                reader.read_u8().expect("Failed to read dest")
+            ),
+            0x0c => Instruction::MOVE_RESULT_OBJECT(
+                reader.read_u8().expect("Failed to read dest")
+            ),
+            0x0d => Instruction::MOVE_EXCEPTION(
+                reader.read_u8().expect("Failed to read dest")
+            ),
+            0x0e => Instruction::RETURN_VOID.also(|_| {
+                reader.read_u8().expect("Failed to read padding");
+            }),
+            0x0f => Instruction::RETURN(
+                reader.read_u8().expect("Failed to read return register")
+            ),
+            0x10 => Instruction::RETURN_WIDE(
+                reader.read_u8().expect("Failed to read return register")
+            ),
+            0x11 => Instruction::RETURN_OBJECT(
+                reader.read_u8().expect("Failed to read return register")
+            ),
+            0x12 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::Const(
+                    ConstOp::CONST_4 {
+                        dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
+                        literal: reader.read::<i32>(4).expect("Failed to read literal"),
+                    }
+                )
+            }
+            0x13 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::Const(
+                    ConstOp::CONST_16 {
+                        dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
+                        literal: reader.read::<i32>(16).expect("Failed to read literal"),
+                    }
+                )
+            }
+            0x14 => {
+                let dest_register = reader.read_u8().expect("Failed to read dest");
+                let mut literal = [0; 4];
+                reader.read_exact(&mut literal).expect("Failed to read literal");
+                Instruction::Const(
+                    ConstOp::CONST {
+                        dest_register,
+                        literal,
+                    }
+                )
+            }
+            0x16 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::Const(
+                    ConstOp::CONST_WIDE_16 {
+                        dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
+                        literal: reader.read::<i64>(16).expect("Failed to read literal"),
+                    }
+                )
+            }
+            0x1a => {
+                Instruction::Const(
+                    ConstOp::CONST_STRING {
+                        dest_register: reader.read_u8().expect("Failed to read register"),
+                        string: data.string_data[
                             reader
                                 .read_u16::<LittleEndian>()
-                                .expect("Failed to read field_id") as usize
+                                .expect("Failed to read string_id") as usize
                             ].clone(),
-                    };
-                    Instruction::StaticOp(
-                        match opcode {
-                            0x60 => StaticFieldOp::SGET(data),
-                            0x62 => StaticFieldOp::SGET_OBJECT(data),
-                            _ => panic!("Unsupported opcode: 0x{:02x?}", opcode)
-                        }
-                    )
-                }
-                0x6e..=0x72 => {
-                    let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
-                    let format = Format35c::parse(&mut reader);
-                    let data = InvokeOpData {
-                        method: data.methods[format.bbbb as usize].clone(),
-                        args_registers: format.reg_list,
-                    };
-
-                    match opcode {
-                        0x6e => Instruction::InvokeOp(InvokeOp::INVOKE_VIRTUAL(data)),
-                        0x6f => Instruction::InvokeOp(InvokeOp::INVOKE_SUPER(data)),
-                        0x70 => Instruction::InvokeOp(InvokeOp::INVOKE_DIRECT(data)),
-                        0x71 => Instruction::InvokeOp(InvokeOp::INVOKE_STATIC(data)),
-                        0x72 => Instruction::InvokeOp(InvokeOp::INVOKE_INTERFACE(data)),
-                        _ => panic!("Unreachable")
                     }
-                }
-                0xd8..=0xe2 => {
-                    let data = BinaryOpLit16Data {
-                        dest: reader.read_u8().expect("Failed to read dest"),
-                        src: reader.read_u8().expect("Failed to read src"),
-                        literal: reader.read_u16::<LittleEndian>().expect("Failed to read literal"),
-                    };
-
-                    match opcode {
-                        0xd8 => Instruction::BinaryOpLit16(BinaryOpLit16::ADD_INT_LIT16(data)),
-                        0xd9 => Instruction::BinaryOpLit16(BinaryOpLit16::RSUB_INT(data)),
-                        0xda => Instruction::BinaryOpLit16(BinaryOpLit16::MUL_INT_LIT16(data)),
-                        0xdb => Instruction::BinaryOpLit16(BinaryOpLit16::DIV_INT_LIT16(data)),
-                        0xdc => Instruction::BinaryOpLit16(BinaryOpLit16::REM_INT_LIT16(data)),
-                        0xdd => Instruction::BinaryOpLit16(BinaryOpLit16::AND_INT_LIT16(data)),
-                        0xde => Instruction::BinaryOpLit16(BinaryOpLit16::OR_INT_LIT16(data)),
-                        0xdf => Instruction::BinaryOpLit16(BinaryOpLit16::XOR_INT_LIT16(data)),
-                        0xe0 => Instruction::BinaryOpLit16(BinaryOpLit16::SHL_INT_LIT16(data)),
-                        0xe1 => Instruction::BinaryOpLit16(BinaryOpLit16::SHR_INT_LIT16(data)),
-                        0xe2 => Instruction::BinaryOpLit16(BinaryOpLit16::USHR_INT_LIT16(data)),
-                        _ => panic!("Unreachable")
-                    }
-                }
-                _ => panic!("Unsupported opcode: 0x{:02x?}", opcode)
+                )
             }
-        )
+            0x1b => {
+                Instruction::Const(
+                    ConstOp::CONST_STRING_JUMBO {
+                        dest_register: reader.read_u8().expect("Failed to read register"),
+                        string: data.string_data[
+                            reader
+                                .read_u32::<LittleEndian>()
+                                .expect("Failed to read string_id") as usize
+                            ].clone(),
+                    }
+                )
+            }
+            0x1c => {
+                Instruction::Const(
+                    ConstOp::CONST_CLASS {
+                        dest_register: reader.read_u8().expect("Failed to read register"),
+                        class: data.type_identifiers[
+                            reader
+                                .read_u16::<LittleEndian>()
+                                .expect("Failed to read type_id") as usize
+                            ].clone(),
+                    }
+                )
+            }
+            0x1d => Instruction::MONITOR_ENTER(
+                reader.read_u8().expect("Failed to read register")
+            ),
+            0x1e => Instruction::MONITOR_EXIT(
+                reader.read_u8().expect("Failed to read register")
+            ),
+            0x1f => Instruction::CHECK_CAST {
+                register: reader.read_u8().expect("Failed to read register"),
+                class: data.type_identifiers[
+                    reader
+                        .read_u16::<LittleEndian>()
+                        .expect("Failed to read type_id") as usize
+                    ].clone(),
+            },
+            0x20 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let dest = reader.read::<u8>(4).expect("Failed to read dest");
+                let object = reader.read::<u8>(4).expect("Failed to read object_register");
+                let type_id = reader
+                    .read::<u16>(16)
+                    .expect("Failed to read type_id") as usize;
+                println!("");
+                Instruction::INSTANCE_OF {
+                    dest_register: dest,
+                    object_register: object,
+                    class: data.type_identifiers[type_id].clone(),
+                }
+            }
+            0x21 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::ARRAY_LENGTH {
+                    dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
+                    array_register: reader.read::<u8>(4).expect("Failed to read array_register"),
+                }
+            }
+            0x22 => Instruction::NEW_INSTANCE {
+                register: reader.read_u8().expect("Failed to read register"),
+                class: data.type_identifiers[
+                    reader
+                        .read_u16::<LittleEndian>()
+                        .expect("Failed to read type_id") as usize
+                    ].clone(),
+            },
+            0x23 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::NEW_ARRAY {
+                    dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
+                    size_register: reader.read::<u8>(4).expect("Failed to read size_register"),
+                    type_: data.type_identifiers[
+                        reader
+                            .read::<u16>(16)
+                            .expect("Failed to read type_id") as usize
+                        ].clone(),
+                }
+            }
+            0x27 => Instruction::THROW(
+                reader.read_u8().expect("Failed to read register")
+            ),
+            0x28 => Instruction::GOTO(
+                reader.read_i8().expect("Failed to read offset")
+            ),
+            0x29 => Instruction::GOTO_16(
+                reader.read_i16::<LittleEndian>().expect("Failed to read offset")
+            ),
+            0x2a => Instruction::GOTO_32(
+                reader.read_i32::<LittleEndian>().expect("Failed to read offset")
+            ),
+            0x2b => {
+                let data = Format31t::parse(&mut reader);
+                let current_position = reader.stream_position().expect("Failed to get current position");
+
+                // converting from code units to bytes since we are reading bytes
+                let offset_in_bytes = data.bbbbbbbb * 2;
+                let table_position =
+                    if offset_in_bytes > 0 {
+                        instruction_pos
+                            .checked_add(offset_in_bytes as u64)
+                    } else {
+                        instruction_pos
+                            .checked_sub(offset_in_bytes.abs() as u64)
+                    }.expect(&format!("Failed to calculate table position. Invalid offset {}", data.bbbbbbbb));
+
+                Instruction::PACKED_SWITCH {
+                    register: data.aa,
+                    table: parse_packed_switch_table(
+                        &mut reader,
+                        &mut packed_switch_tables,
+                        table_position,
+                    ).also(|_| {
+                        reader.seek(SeekFrom::Start(current_position))
+                            .expect("Failed to seek back to next instruction position");
+                    }),
+                }
+            }
+            0x2c => {
+                let data = Format31t::parse(&mut reader);
+                let current_position = reader.stream_position().expect("Failed to get current position");
+
+                // converting from code units to bytes since we are reading bytes
+                let offset_in_bytes = data.bbbbbbbb * 2;
+                let table_position =
+                    if offset_in_bytes > 0 {
+                        instruction_pos
+                            .checked_add(offset_in_bytes as u64)
+                    } else {
+                        instruction_pos
+                            .checked_sub(offset_in_bytes.abs() as u64)
+                    }.expect(&format!("Failed to calculate table position. Invalid offset {}", data.bbbbbbbb));
+
+                Instruction::SPARSE_SWITCH {
+                    register: data.aa,
+                    table: parse_sparse_switch_table(
+                        &mut reader,
+                        &mut sparse_switch_tables,
+                        table_position,
+                    ).also(|_| {
+                        reader.seek(SeekFrom::Start(current_position))
+                            .expect("Failed to seek back to next instruction position");
+                    }),
+                }
+            }
+            0x2d..=0x31 => {
+                let data = CmpOpData {
+                    destination_register: reader.read_u8().expect("Failed to read destination_register"),
+                    register_a: reader.read_u8().expect("Failed to read register_a"),
+                    register_b: reader.read_u8().expect("Failed to read register_b"),
+                };
+
+                Instruction::Cmp(
+                    match opcode {
+                        0x2d => CmpOp::CMPL_FLOAT(data),
+                        0x2e => CmpOp::CMPG_FLOAT(data),
+                        0x2f => CmpOp::CMPL_DOUBLE(data),
+                        0x30 => CmpOp::CMPG_DOUBLE(data),
+                        0x31 => CmpOp::CMP_LONG(data),
+                        _ => panic!("Unreachable")
+                    })
+            }
+            0x32..=0x37 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let data = IfTestOpData {
+                    register_a: reader.read::<u8>(4).expect("Failed to read register_a"),
+                    register_b: reader.read::<u8>(4).expect("Failed to read register_b"),
+                    offset: reader.read::<i16>(16).expect("Failed to read offset"),
+                };
+
+                Instruction::IfTest(
+                    match opcode {
+                        0x32 => IfTestOp::IF_EQ(data),
+                        0x33 => IfTestOp::IF_NE(data),
+                        0x34 => IfTestOp::IF_LT(data),
+                        0x35 => IfTestOp::IF_GE(data),
+                        0x36 => IfTestOp::IF_GT(data),
+                        0x37 => IfTestOp::IF_LE(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
+            }
+            0x38..=0x3d => {
+                let data = IfTestZOpData {
+                    register_a: reader.read_u8().expect("Failed to read register_a"),
+                    offset: reader.read_i16::<LittleEndian>().expect("Failed to read offset"),
+                };
+                Instruction::IfTestZ(
+                    match opcode {
+                        0x38 => IfTestZOp::IF_EQZ(data),
+                        0x39 => IfTestZOp::IF_NEZ(data),
+                        0x3a => IfTestZOp::IF_LTZ(data),
+                        0x3b => IfTestZOp::IF_GEZ(data),
+                        0x3c => IfTestZOp::IF_GTZ(data),
+                        0x3d => IfTestZOp::IF_LEZ(data),
+                        _ => panic!("Unreachables")
+                    }
+                )
+            }
+            0x3e..=0x43 => panic!("Unused opcode encountered: {:02x?}", opcode),
+            0x44..=0x51 => {
+                let data = ArrayOpData {
+                    register_or_pair: reader.read_u8().expect("Unable to read array instruction register"),
+                    array_register: reader.read_u8().expect("Unable to read array register"),
+                    index_register: reader.read_u8().expect("Unable to read array index register"),
+                };
+
+                Instruction::Array(
+                    match opcode {
+                        0x44 => ArrayOp::AGET(data),
+                        0x45 => ArrayOp::AGET_WIDE(data),
+                        0x46 => ArrayOp::AGET_OBJECT(data),
+                        0x47 => ArrayOp::AGET_BOOLEAN(data),
+                        0x48 => ArrayOp::AGET_BYTE(data),
+                        0x49 => ArrayOp::AGET_CHAR(data),
+                        0x4a => ArrayOp::AGET_SHORT(data),
+                        0x4b => ArrayOp::APUT(data),
+                        0x4c => ArrayOp::APUT_WIDE(data),
+                        0x4d => ArrayOp::APUT_OBJECT(data),
+                        0x4e => ArrayOp::APUT_BOOLEAN(data),
+                        0x4f => ArrayOp::APUT_BYTE(data),
+                        0x50 => ArrayOp::APUT_CHAR(data),
+                        0x51 => ArrayOp::APUT_SHORT(data),
+                        _ => panic!("Unsupported opcode: {}", opcode)
+                    }
+                )
+            }
+            0x52..=0x5f => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let data = InstanceFieldOpData {
+                    register_or_pair: reader.read::<u8>(4).expect("Failed to read register_or_pair"),
+                    object_register: reader.read::<u8>(4).expect("Failed to read object_register"),
+                    field: data.fields[
+                        reader
+                            .read::<u16>(16)
+                            .expect("Failed to read field_id") as usize
+                        ].clone(),
+                };
+
+                Instruction::InstanceField(
+                    match opcode {
+                        0x52 => InstanceFieldOp::IGET(data),
+                        0x53 => InstanceFieldOp::IGET_WIDE(data),
+                        0x54 => InstanceFieldOp::IGET_OBJECT(data),
+                        0x55 => InstanceFieldOp::IGET_BOOLEAN(data),
+                        0x56 => InstanceFieldOp::IGET_BYTE(data),
+                        0x57 => InstanceFieldOp::IGET_CHAR(data),
+                        0x58 => InstanceFieldOp::IGET_SHORT(data),
+                        0x59 => InstanceFieldOp::IPUT(data),
+                        0x5a => InstanceFieldOp::IPUT_WIDE(data),
+                        0x5b => InstanceFieldOp::IPUT_OBJECT(data),
+                        0x5c => InstanceFieldOp::IPUT_BOOLEAN(data),
+                        0x5d => InstanceFieldOp::IPUT_BYTE(data),
+                        0x5e => InstanceFieldOp::IPUT_CHAR(data),
+                        0x5f => InstanceFieldOp::IPUT_SHORT(data),
+                        _ => panic!("Unsupported opcode: 0x{:02x?}", opcode),
+                    }
+                )
+            }
+            0x60..=0x6d => {
+                let register = reader.read_u8().expect("Failed to read register");
+                let field_id = reader
+                    .read_u16::<LittleEndian>()
+                    .expect("Failed to read field_id") as usize;
+                if field_id >= data.fields.len() {
+                    panic!("Invalid field_id: {}", field_id);
+                }
+                let data = StaticFieldOpData {
+                    register,
+                    field: data.fields.get(field_id).expect(&format!("Unable to get field with index {} for instruction with opcode {:2x?}", field_id, opcode)).clone(),
+                };
+                Instruction::Static(
+                    match opcode {
+                        0x60 => StaticFieldOp::SGET(data),
+                        0x61 => StaticFieldOp::SGET_WIDE(data),
+                        0x62 => StaticFieldOp::SGET_OBJECT(data),
+                        0x63 => StaticFieldOp::SGET_BOOLEAN(data),
+                        0x64 => StaticFieldOp::SGET_BYTE(data),
+                        0x65 => StaticFieldOp::SGET_CHAR(data),
+                        0x66 => StaticFieldOp::SGET_SHORT(data),
+                        0x67 => StaticFieldOp::SPUT(data),
+                        0x68 => StaticFieldOp::SPUT_WIDE(data),
+                        0x69 => StaticFieldOp::SPUT_OBJECT(data),
+                        0x6a => StaticFieldOp::SPUT_BOOLEAN(data),
+                        0x6b => StaticFieldOp::SPUT_BYTE(data),
+                        0x6c => StaticFieldOp::SPUT_CHAR(data),
+                        0x6d => StaticFieldOp::SPUT_SHORT(data),
+                        _ => panic!("Unsupported opcode: 0x{:02x?}", opcode)
+                    }
+                )
+            }
+            0x6e..=0x72 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let format = Format35c::parse(&mut reader);
+                let data = InvokeOpData {
+                    method: data.methods[format.bbbb as usize].clone(),
+                    args_registers: format.reg_list,
+                };
+
+                Instruction::Invoke(
+                    match opcode {
+                        0x6e => InvokeOp::INVOKE_VIRTUAL(data),
+                        0x6f => InvokeOp::INVOKE_SUPER(data),
+                        0x70 => InvokeOp::INVOKE_DIRECT(data),
+                        0x71 => InvokeOp::INVOKE_STATIC(data),
+                        0x72 => InvokeOp::INVOKE_INTERFACE(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
+            }
+            0x74..=0x78 => {
+                let format = Format3rc::parse(&mut reader);
+                let data = InvokeRangeOpData {
+                    method: data.methods[format.bbbb as usize].clone(),
+                    start_register: format.cccc,
+                    register_count: format.reg_count,
+                };
+
+                match opcode {
+                    0x74 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_VIRTUAL(data)),
+                    0x75 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_SUPER(data)),
+                    0x76 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_DIRECT(data)),
+                    0x77 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_STATIC(data)),
+                    0x78 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_INTERFACE(data)),
+                    _ => panic!("Unreachable")
+                }
+            }
+            0x7b..=0x8f => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let data = UnaryOpData {
+                    dest: reader.read::<u8>(4).expect("Failed to read dest"),
+                    src: reader.read::<u8>(4).expect("Failed to read src"),
+                };
+
+                Instruction::Unary(
+                    match opcode {
+                        0x7b => UnaryOp::NEG_INT(data),
+                        0x7c => UnaryOp::NOT_INT(data),
+                        0x7d => UnaryOp::NEG_LONG(data),
+                        0x7e => UnaryOp::NOT_LONG(data),
+                        0x7f => UnaryOp::NEG_FLOAT(data),
+                        0x80 => UnaryOp::NEG_DOUBLE(data),
+                        0x81 => UnaryOp::INT_TO_LONG(data),
+                        0x82 => UnaryOp::INT_TO_FLOAT(data),
+                        0x83 => UnaryOp::INT_TO_DOUBLE(data),
+                        0x84 => UnaryOp::LONG_TO_INT(data),
+                        0x85 => UnaryOp::LONG_TO_FLOAT(data),
+                        0x86 => UnaryOp::LONG_TO_DOUBLE(data),
+                        0x87 => UnaryOp::FLOAT_TO_INT(data),
+                        0x88 => UnaryOp::FLOAT_TO_LONG(data),
+                        0x89 => UnaryOp::FLOAT_TO_DOUBLE(data),
+                        0x8a => UnaryOp::DOUBLE_TO_INT(data),
+                        0x8b => UnaryOp::DOUBLE_TO_LONG(data),
+                        0x8c => UnaryOp::DOUBLE_TO_FLOAT(data),
+                        0x8d => UnaryOp::INT_TO_BYTE(data),
+                        0x8e => UnaryOp::INT_TO_CHAR(data),
+                        0x8f => UnaryOp::INT_TO_SHORT(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
+            }
+            0xb0..=0xcf => {
+                let data = BinaryOp2AddrData {
+                    dest: reader.read_u8().expect("Failed to read dest"),
+                    src: reader.read_u8().expect("Failed to read src"),
+                };
+
+                Instruction::Binary2Addr(
+                    match opcode {
+                        0xb0 => BinaryOp2Addr::ADD_INT_2ADDR(data),
+                        0xb1 => BinaryOp2Addr::SUB_INT_2ADDR(data),
+                        0xb2 => BinaryOp2Addr::MUL_INT_2ADDR(data),
+                        0xb3 => BinaryOp2Addr::DIV_INT_2ADDR(data),
+                        0xb4 => BinaryOp2Addr::REM_INT_2ADDR(data),
+                        0xb5 => BinaryOp2Addr::AND_INT_2ADDR(data),
+                        0xb6 => BinaryOp2Addr::OR_INT_2ADDR(data),
+                        0xb7 => BinaryOp2Addr::XOR_INT_2ADDR(data),
+                        0xb8 => BinaryOp2Addr::SHL_INT_2ADDR(data),
+                        0xb9 => BinaryOp2Addr::SHR_INT_2ADDR(data),
+                        0xba => BinaryOp2Addr::USHR_INT_2ADDR(data),
+                        0xbb => BinaryOp2Addr::ADD_LONG_2ADDR(data),
+                        0xbc => BinaryOp2Addr::SUB_LONG_2ADDR(data),
+                        0xbd => BinaryOp2Addr::MUL_LONG_2ADDR(data),
+                        0xbe => BinaryOp2Addr::DIV_LONG_2ADDR(data),
+                        0xbf => BinaryOp2Addr::REM_LONG_2ADDR(data),
+                        0xc0 => BinaryOp2Addr::AND_LONG_2ADDR(data),
+                        0xc1 => BinaryOp2Addr::OR_LONG_2ADDR(data),
+                        0xc2 => BinaryOp2Addr::XOR_LONG_2ADDR(data),
+                        0xc3 => BinaryOp2Addr::SHL_LONG_2ADDR(data),
+                        0xc4 => BinaryOp2Addr::SHR_LONG_2ADDR(data),
+                        0xc5 => BinaryOp2Addr::USHR_LONG_2ADDR(data),
+                        0xc6 => BinaryOp2Addr::ADD_FLOAT_2ADDR(data),
+                        0xc7 => BinaryOp2Addr::SUB_FLOAT_2ADDR(data),
+                        0xc8 => BinaryOp2Addr::MUL_FLOAT_2ADDR(data),
+                        0xc9 => BinaryOp2Addr::DIV_FLOAT_2ADDR(data),
+                        0xca => BinaryOp2Addr::REM_FLOAT_2ADDR(data),
+                        0xcb => BinaryOp2Addr::ADD_DOUBLE_2ADDR(data),
+                        0xcc => BinaryOp2Addr::SUB_DOUBLE_2ADDR(data),
+                        0xcd => BinaryOp2Addr::MUL_DOUBLE_2ADDR(data),
+                        0xce => BinaryOp2Addr::DIV_DOUBLE_2ADDR(data),
+                        0xcf => BinaryOp2Addr::REM_DOUBLE_2ADDR(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
+            }
+            0xd0..=0xd7 => {
+                let data = BinaryOpLit16Data {
+                    dest: reader.read_u8().expect("Failed to read dest"),
+                    src: reader.read_u8().expect("Failed to read src"),
+                    literal: reader.read_u16::<LittleEndian>().expect("Failed to read literal"),
+                };
+
+                Instruction::BinaryLit16(
+                    match opcode {
+                        0xd0 => BinaryOpLit16::ADD_INT_LIT16(data),
+                        0xd1 => BinaryOpLit16::RSUB_INT(data),
+                        0xd2 => BinaryOpLit16::MUL_INT_LIT16(data),
+                        0xd3 => BinaryOpLit16::DIV_INT_LIT16(data),
+                        0xd4 => BinaryOpLit16::REM_INT_LIT16(data),
+                        0xd5 => BinaryOpLit16::AND_INT_LIT16(data),
+                        0xd6 => BinaryOpLit16::OR_INT_LIT16(data),
+                        0xd7 => BinaryOpLit16::XOR_INT_LIT16(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
+            }
+            0xd8..=0xe2 => {
+                let data = BinaryOpLit8Data {
+                    dest: reader.read_u8().expect("Failed to read dest"),
+                    src: reader.read_u8().expect("Failed to read src"),
+                    literal: reader.read_u8().expect("Failed to read literal"),
+                };
+                Instruction::BinaryLit8(
+                    match opcode {
+                        0xd8 => BinaryOpLit8::ADD_INT_LIT8(data),
+                        0xd9 => BinaryOpLit8::RSUB_INT_LIT8(data),
+                        0xda => BinaryOpLit8::MUL_INT_LIT8(data),
+                        0xdb => BinaryOpLit8::DIV_INT_LIT8(data),
+                        0xdc => BinaryOpLit8::REM_INT_LIT8(data),
+                        0xdd => BinaryOpLit8::AND_INT_LIT8(data),
+                        0xde => BinaryOpLit8::OR_INT_LIT8(data),
+                        0xdf => BinaryOpLit8::XOR_INT_LIT8(data),
+                        0xe0 => BinaryOpLit8::SHL_INT_LIT8(data),
+                        0xe1 => BinaryOpLit8::SHR_INT_LIT8(data),
+                        0xe2 => BinaryOpLit8::USHR_INT_LIT8(data),
+                        _ => panic!("Unreachable! opcode: {:02x?}", opcode)
+                    }
+                )
+            }
+            0xe3..=0xf9 => panic!("Unused opcode! {:02x?}", opcode),
+            _ => panic!("Unsupported opcode: 0x{:02x?}", opcode),
+        };
+
+        println!("Parsed instruction: {:?}", instruction);
+
+        result.push(instruction)
     }
 
     result
 }
 
-fn parse_raw_tries(file: &mut File, tries_size: u16) -> Vec<RawTryItem> {
+fn parse_packed_switch_table<R: Read + Seek>(reader: &mut R, packed_switch_tables: &mut HashMap<u64, Rc<PackedSwitchTable>>, offset: u64) -> Rc<PackedSwitchTable> {
+    if let Some(table) = packed_switch_tables.get(&offset) {
+        return table.clone();
+    }
+
+    reader.seek(SeekFrom::Start(offset))
+        .expect(format!("Failed to seek to packed_switch_table offset {}", offset).as_str());
+
+    let ident = reader.read_u16::<LittleEndian>().expect("Failed to read ident");
+    if ident != 0x0100 {
+        panic!("Invalid ident: {:02x?}", ident);
+    }
+    let size = reader.read_u16::<LittleEndian>().expect("Failed to read size");
+    let first_key = reader.read_i32::<LittleEndian>().expect("Failed to read first_key");
+    let targets = reader.parse_list(size as u64, |file| {
+        file.read_i32::<LittleEndian>().expect("Failed to read target")
+    });
+
+    let table = Rc::new(PackedSwitchTable {
+        size_in_code_units: (size as u32 * 2) + 4,
+        first_key,
+        targets,
+    });
+    packed_switch_tables.insert(offset, table.clone());
+    table
+}
+
+fn parse_sparse_switch_table<R: Read + Seek>(reader: &mut R, sparse_switch_tables: &mut HashMap<u64, Rc<SparseSwitchTable>>, offset: u64) -> Rc<SparseSwitchTable> {
+    if let Some(table) = sparse_switch_tables.get(&offset) {
+        return table.clone();
+    }
+
+    reader.seek(SeekFrom::Start(offset))
+        .expect(format!("Failed to seek to sparse_switch_table offset {}", offset).as_str());
+
+    let ident = reader.read_u16::<LittleEndian>().expect("Failed to read ident");
+    if ident != 0x0200 {
+        panic!("Invalid ident: {:02x?}", ident);
+    }
+    let size = reader.read_u16::<LittleEndian>().expect("Failed to read size");
+    let keys = reader.parse_list(size as u64, |file| {
+        file.read_i32::<LittleEndian>().expect("Failed to read key")
+    });
+    let targets = reader.parse_list(size as u64, |file| {
+        file.read_i32::<LittleEndian>().expect("Failed to read target")
+    });
+
+    let table = Rc::new(SparseSwitchTable {
+        size_in_code_units: (size as u32 * 4) + 2,
+        keys,
+        targets,
+    });
+    sparse_switch_tables.insert(offset, table.clone());
+    table
+}
+
+fn parse_tries(file: &mut File, tries_size: u16) -> Vec<TryItem> {
     if tries_size == 0 {
         return vec![];
     }
 
     file.parse_list(tries_size as u64, |file| {
-        let start_addr = file.read_u32::<LittleEndian>().expect("Failed to read start_addr");
-        let insn_count = file.read_u16::<LittleEndian>().expect("Failed to read insn_count");
-        let handler_off = file.read_u16::<LittleEndian>().expect("Failed to read handler_offset");
-
-        RawTryItem {
-            start_addr,
-            insn_count,
-            handler_off,
+        TryItem {
+            start_addr: file.read_u32::<LittleEndian>().expect("Failed to read start_addr"),
+            insn_count: file.read_u16::<LittleEndian>().expect("Failed to read insn_count"),
+            handler_offset: file.read_u16::<LittleEndian>().expect("Failed to read handler_offset"),
         }
     })
 }
 
-fn parse_tries(file: &mut File, raw_tries: Vec<RawTryItem>, data: &DexFileData) -> Vec<TryItem> {
-    raw_tries
-        .iter()
-        .map(|raw_try| {
-            file.seek(SeekFrom::Start(raw_try.start_addr as u64))
-                .expect("Failed to seek to try start address");
-            let code_units = parse_raw_insns(file, raw_try.insn_count as u32);
-            TryItem {
-                code_units: parse_instructions(code_units, data),
-                handler: parse_encoded_catch_handler(file, raw_try.handler_off),
-            }
-        })
-        .collect()
+fn parse_handlers(file: &mut File, data: &DexFileData) -> Vec<EncodedCatchHandler> {
+    let size = file.read_uleb128().expect("Failed to read handlers size");
+    file.parse_list(size, |file| {
+        parse_encoded_catch_handler(file, data)
+    })
 }
 
-fn parse_encoded_catch_handler(file: &mut File, handler_offset: u16) -> EncodedCatchHandler {
-    file.seek(SeekFrom::Start(handler_offset as u64)).expect("Failed to seek to handler_offset");
+fn parse_encoded_catch_handler(file: &mut File, data: &DexFileData) -> EncodedCatchHandler {
     let size = file.read_sleb128().expect("Failed to read handler size");
     let handlers = (0..size.abs())
         .map(|_| {
@@ -727,7 +1309,6 @@ fn parse_encoded_catch_handler(file: &mut File, handler_offset: u16) -> EncodedC
 
 fn parse_raw_insns(file: &mut File, insns_count: u32) -> Vec<u8> {
     let mut buf = vec![0u8; (insns_count * 2) as usize];
-    let position = file.stream_position();
     file.read_exact(buf.as_mut_slice()).expect("Failed to read instructions");
     buf
 }

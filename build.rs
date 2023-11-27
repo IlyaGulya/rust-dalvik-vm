@@ -1,15 +1,53 @@
 use std::{env, fs};
 use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
+use std::str::Split;
 
 fn main() {
-    // let bytecode = File::open("data/bytecode.txt").expect("Unable to open data/bytecode.txt");
+    generate_bytecode();
     download_jre();
     extract_stdlib();
     strip_stdlib();
     dex_stdlib();
 }
+
+fn generate_bytecode() {
+    // let bytecode = Path::new("data/bytecode.txt");
+    // let file = File::open(bytecode).expect(&format!("Unable to open {:?}", bytecode));
+
+    // for Ok(line) in BufReader::new(file).lines() {
+    //     let mut parts = line.split(" ");
+    //     let struct_type = parts.next();
+    //
+    //     // let formats = vec![];
+    //     // let instructions = vec![];
+    //
+    //     // match struct_type {
+    //     //     None => continue,
+    //     //     Some("format") => {
+    //     //         formats.push(parse_formats(parts))
+    //     //     }
+    //     //     Some("op") => {
+    //     //
+    //     //     }
+    //     // }
+    // }
+}
+
+struct Format {
+    name: String,
+    fields: Vec<Field>,
+}
+
+struct Field {
+
+}
+
+// fn parse_formats(p0: Split<&str>) -> T {
+//     todo!()
+// }
 
 fn strip_stdlib() {
     let mut command = std::process::Command::new("proguard");
