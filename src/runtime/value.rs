@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::runtime::class::RuntimeClass;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Void,
     Default,

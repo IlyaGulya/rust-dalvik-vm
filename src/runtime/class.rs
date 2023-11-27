@@ -19,7 +19,7 @@ pub struct MethodDefinition {
     pub descriptor: MethodDescriptor,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct RuntimeClass {
     pub name: String,
     pub definition: Rc<ClassDefinition>,
@@ -60,7 +60,7 @@ pub struct FieldDescription {
 
 pub type MethodDescriptor = Rc<String>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct RuntimeMethod {
     pub name: Rc<String>,
     pub descriptor: MethodDescriptor,
@@ -68,7 +68,7 @@ pub struct RuntimeMethod {
     pub is_static: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct RuntimeField {
     pub definition: Rc<Field>,
     pub is_static: bool,

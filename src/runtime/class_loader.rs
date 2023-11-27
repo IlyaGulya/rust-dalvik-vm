@@ -31,7 +31,10 @@ impl ClassLoader for DexClassLoader {
 
         let methods: HashMap<MethodDefinition, Rc<RuntimeMethod>> =
             if let Some(class_data) = class_data {
-                class_data.direct_methods.iter()
+                let direct = class_data.direct_methods.iter();
+                let virt = class_data.virtual_methods.iter();
+                let all_methods = direct.chain(virt);
+                all_methods
                     .map(|m| {
                         let mut descriptor = String::new();
 
@@ -66,7 +69,10 @@ impl ClassLoader for DexClassLoader {
 
         let fields: HashMap<FieldDescription, Rc<RuntimeField>> =
             if let Some(class_data) = class_data {
-                class_data.static_fields.iter()
+                let static_ = class_data.static_fields.iter();
+                let instance = class_data.instance_fields.iter();
+                let all_fields = static_.chain(instance);
+                all_fields
                     .map(|f| {
                         (
                             FieldDescription {
