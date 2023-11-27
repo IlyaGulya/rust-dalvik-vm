@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::dex::dex_file::{Field, Method};
+use crate::dex::dex_file::{Field, Method, Prototype};
 
 #[derive(Debug, PartialEq)]
 pub struct StaticFieldOpData {
@@ -123,34 +123,17 @@ pub struct Const4Data {
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq)]
 pub enum ConstOp {
-    CONST_4 {
-        dest_register: u8,
-        literal: i32,
-    },
-    CONST_16 {
-        dest_register: u8,
-        literal: i32,
-    },
-    CONST {
-        dest_register: u8,
-        literal: [u8; 4],
-    },
-    CONST_WIDE_16 {
-        dest_register: u8,
-        literal: i64,
-    },
-    CONST_STRING {
-        dest_register: u8,
-        string: Rc<String>,
-    },
-    CONST_STRING_JUMBO {
-        dest_register: u8,
-        string: Rc<String>,
-    },
-    CONST_CLASS {
-        dest_register: u8,
-        class: Rc<String>,
-    },
+    CONST_4 { dest_register: u8, literal: i8 },
+    CONST_16 { dest_register: u8, literal: i16 },
+    CONST { dest_register: u8, literal: [u8; 4] },
+    CONST_HIGH_16 { dest_register: u8, literal: i32 },
+    CONST_WIDE_16 { dest_register: u8, literal: i16 },
+    CONST_WIDE_32 { dest_register: u8, literal: i32 },
+    CONST_WIDE { dest_register: u8, literal: i32 },
+    CONST_WIDE_HIGH_16 { dest_register: u8, literal: i64 },
+    CONST_STRING { dest_register: u8, string: Rc<String> },
+    CONST_STRING_JUMBO { dest_register: u8, string: Rc<String> },
+    CONST_CLASS { dest_register: u8, class: Rc<String> },
 }
 
 #[allow(non_camel_case_types)]
@@ -206,6 +189,13 @@ pub enum InvokeRangeOp {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct BinaryOpData {
+    pub dest: u8,
+    pub src_a: u8,
+    pub src_b: u8,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct BinaryOp2AddrData {
     pub dest: u8,
     pub src: u8,
@@ -244,6 +234,42 @@ pub enum UnaryOp {
     INT_TO_SHORT(UnaryOpData),
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Debug, PartialEq)]
+pub enum BinaryOp {
+    ADD_INT(BinaryOpData),
+    SUB_INT(BinaryOpData),
+    MUL_INT(BinaryOpData),
+    DIV_INT(BinaryOpData),
+    REM_INT(BinaryOpData),
+    AND_INT(BinaryOpData),
+    OR_INT(BinaryOpData),
+    XOR_INT(BinaryOpData),
+    SHL_INT(BinaryOpData),
+    SHR_INT(BinaryOpData),
+    USHR_INT(BinaryOpData),
+    ADD_LONG(BinaryOpData),
+    SUB_LONG(BinaryOpData),
+    MUL_LONG(BinaryOpData),
+    DIV_LONG(BinaryOpData),
+    REM_LONG(BinaryOpData),
+    AND_LONG(BinaryOpData),
+    OR_LONG(BinaryOpData),
+    XOR_LONG(BinaryOpData),
+    SHL_LONG(BinaryOpData),
+    SHR_LONG(BinaryOpData),
+    USHR_LONG(BinaryOpData),
+    ADD_FLOAT(BinaryOpData),
+    SUB_FLOAT(BinaryOpData),
+    MUL_FLOAT(BinaryOpData),
+    DIV_FLOAT(BinaryOpData),
+    REM_FLOAT(BinaryOpData),
+    ADD_DOUBLE(BinaryOpData),
+    SUB_DOUBLE(BinaryOpData),
+    MUL_DOUBLE(BinaryOpData),
+    DIV_DOUBLE(BinaryOpData),
+    REM_DOUBLE(BinaryOpData),
+}
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq)]
@@ -287,7 +313,7 @@ pub enum BinaryOp2Addr {
 pub struct BinaryOpLit16Data {
     pub dest: u8,
     pub src: u8,
-    pub literal: u16,
+    pub literal: i16,
 }
 
 #[derive(Debug, PartialEq)]
@@ -340,46 +366,27 @@ pub struct SparseSwitchTable {
     pub targets: Vec<i32>,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct FillArrayData {
+    pub size_in_code_units: u32,
+    pub element_width: u16,
+    pub size: u32,
+    pub data: Vec<u8>,
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq)]
 pub enum Instruction {
     NOP,
-    MOVE {
-        dest: u8,
-        src: u8,
-    },
-    MOVE_FROM16 {
-        dest: u8,
-        src: u16,
-    },
-    MOVE_16 {
-        dest: u16,
-        src: u16,
-    },
-    MOVE_WIDE {
-        dest: u8,
-        src: u8,
-    },
-    MOVE_WIDE_FROM16 {
-        dest: u8,
-        src: u16,
-    },
-    MOVE_WIDE_16 {
-        dest: u16,
-        src: u16,
-    },
-    MOVE_OBJECT {
-        dest: u8,
-        src: u8,
-    },
-    MOVE_OBJECT_FROM16 {
-        dest: u8,
-        src: u16,
-    },
-    MOVE_OBJECT_16 {
-        dest: u16,
-        src: u16,
-    },
+    MOVE { dest: u8, src: u8 },
+    MOVE_FROM16 { dest: u8, src: u16 },
+    MOVE_16 { dest: u16, src: u16 },
+    MOVE_WIDE { dest: u8, src: u8 },
+    MOVE_WIDE_FROM16 { dest: u8, src: u16 },
+    MOVE_WIDE_16 { dest: u16, src: u16 },
+    MOVE_OBJECT { dest: u8, src: u8 },
+    MOVE_OBJECT_FROM16 { dest: u8, src: u16 },
+    MOVE_OBJECT_16 { dest: u16, src: u16 },
     MOVE_RESULT(u8),
     MOVE_RESULT_WIDE(u8),
     MOVE_RESULT_OBJECT(u8),
@@ -396,45 +403,27 @@ pub enum Instruction {
     Const(ConstOp),
     MONITOR_ENTER(u8),
     MONITOR_EXIT(u8),
-    CHECK_CAST {
-        register: u8,
-        class: Rc<String>,
-    },
-    INSTANCE_OF {
-        dest_register: u8,
-        object_register: u8,
-        class: Rc<String>,
-    },
-    ARRAY_LENGTH {
-        dest_register: u8,
-        array_register: u8,
-    },
-    NEW_INSTANCE {
-        register: u8,
-        class: Rc<String>,
-    },
-    NEW_ARRAY {
-        dest_register: u8,
-        size_register: u8,
-        type_: Rc<String>,
-    },
+    CHECK_CAST { register: u8, class: Rc<String> },
+    INSTANCE_OF { dest_register: u8, object_register: u8, class: Rc<String> },
+    ARRAY_LENGTH { dest_register: u8, array_register: u8 },
+    NEW_INSTANCE { register: u8, class: Rc<String> },
+    NEW_ARRAY { dest_register: u8, size_register: u8, type_: Rc<String> },
+    FILLED_NEW_ARRAY { registers: Vec<u8>, type_: Rc<String> },
+    FILLED_NEW_ARRAY_RANGE { type_: Rc<String>, start_register: u16, register_count: u8 },
+    FILL_ARRAY_DATA { array_register: u8, data: Rc<FillArrayData> },
     THROW(u8),
     GOTO(i8),
     GOTO_16(i16),
     GOTO_32(i32),
-    PACKED_SWITCH {
-        register: u8,
-        table: Rc<PackedSwitchTable>,
-    },
-    SPARSE_SWITCH {
-        register: u8,
-        table: Rc<SparseSwitchTable>,
-    },
+    PACKED_SWITCH { register: u8, table: Rc<PackedSwitchTable> },
+    SPARSE_SWITCH { register: u8, table: Rc<SparseSwitchTable> },
     Static(StaticFieldOp),
     Invoke(InvokeOp),
     InvokeRange(InvokeRangeOp),
     Unary(UnaryOp),
+    Binary(BinaryOp),
     Binary2Addr(BinaryOp2Addr),
     BinaryLit8(BinaryOpLit8),
     BinaryLit16(BinaryOpLit16),
+    CONST_METHOD_TYPE { dest: u8, method_type: Rc<Prototype> },
 }

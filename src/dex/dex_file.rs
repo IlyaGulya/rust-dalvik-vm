@@ -9,7 +9,7 @@ use bitstream_io::{BitRead, BitReader};
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::bytecode::formats::{Format31t, Format35c, Format3rc};
-use crate::bytecode::instructions::{ArrayOp, ArrayOpData, BinaryOp2Addr, BinaryOp2AddrData, BinaryOpLit16, BinaryOpLit16Data, BinaryOpLit8, BinaryOpLit8Data, CmpOp, CmpOpData, ConstOp, IfTestOp, IfTestOpData, IfTestZOp, IfTestZOpData, InstanceFieldOp, InstanceFieldOpData, Instruction, InvokeOp, InvokeOpData, InvokeRangeOp, InvokeRangeOpData, PackedSwitchTable, SparseSwitchTable, StaticFieldOp, StaticFieldOpData, UnaryOp, UnaryOpData};
+use crate::bytecode::instructions::{ArrayOp, ArrayOpData, BinaryOp, BinaryOp2Addr, BinaryOp2AddrData, BinaryOpData, BinaryOpLit16, BinaryOpLit16Data, BinaryOpLit8, BinaryOpLit8Data, CmpOp, CmpOpData, ConstOp, FillArrayData, IfTestOp, IfTestOpData, IfTestZOp, IfTestZOpData, InstanceFieldOp, InstanceFieldOpData, Instruction, InvokeOp, InvokeOpData, InvokeRangeOp, InvokeRangeOpData, PackedSwitchTable, SparseSwitchTable, StaticFieldOp, StaticFieldOpData, UnaryOp, UnaryOpData};
 use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
 use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
 
@@ -523,10 +523,7 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
                 bits: raw.access_flags,
             };
 
-            if method.definer.as_str() == "Ljava/io/BufferedInputStream;" && method.name.as_str() == "available" {
-                println!("Parsing method: {:?}", method);
-            }
-            println!("Parsing method: {:?}", method);
+            // println!("Parsing method: {:?}", method);
 
             EncodedMethod {
                 method: method.clone(),
@@ -591,6 +588,7 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
     let mut result = vec![];
     let mut packed_switch_tables: HashMap<u64, Rc<PackedSwitchTable>> = HashMap::new();
     let mut sparse_switch_tables: HashMap<u64, Rc<SparseSwitchTable>> = HashMap::new();
+    let mut fill_array_datas: HashMap<u64, Rc<FillArrayData>> = HashMap::new();
 
     loop {
         let instruction_pos = reader.stream_position().expect("Failed to get instruction position");
@@ -612,7 +610,7 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                         let next_instruction_pos = instruction_pos + size_in_bytes as u64;
                         reader.seek(SeekFrom::Start(next_instruction_pos))
                             .expect(&format!("Failed to skip packed switch table and seek to next instruction position {}", next_instruction_pos));
-                        continue
+                        continue;
                     }
                     0x02 => {
                         let table =
@@ -623,7 +621,16 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                         let next_instruction_pos = instruction_pos + size_in_bytes as u64;
                         reader.seek(SeekFrom::Start(next_instruction_pos))
                             .expect(&format!("Failed to skip sparse switch table and seek to next instruction position {}", next_instruction_pos));
-                        continue
+                        continue;
+                    }
+                    0x03 => {
+                        let data = fill_array_datas.get(&instruction_pos)
+                            .expect(&format!("Failed to get fill array data for position {}", instruction_pos));
+                        let size_in_bytes = data.size_in_code_units * 2;
+                        let next_instruction_pos = instruction_pos + size_in_bytes as u64;
+                        reader.seek(SeekFrom::Start(next_instruction_pos))
+                            .expect(&format!("Failed to skip fill array data and seek to next instruction position {}", next_instruction_pos));
+                        continue;
                     }
                     0 => {} // correct padding
                     _ => panic!("Invalid NOP padding: {}", padding)
@@ -645,10 +652,13 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 dest: reader.read_u16::<LittleEndian>().expect("Failed to read dest"),
                 src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
             },
-            0x04 => Instruction::MOVE_WIDE {
-                dest: reader.read_u8().expect("Failed to read dest"),
-                src: reader.read_u8().expect("Failed to read src"),
-            },
+            0x04 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                Instruction::MOVE_WIDE {
+                    dest: reader.read::<u8>(4).expect("Failed to read dest"),
+                    src: reader.read::<u8>(4).expect("Failed to read src"),
+                }
+            }
             0x05 => Instruction::MOVE_WIDE_FROM16 {
                 dest: reader.read_u8().expect("Failed to read dest"),
                 src: reader.read_u16::<LittleEndian>().expect("Failed to read src"),
@@ -701,16 +711,15 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 Instruction::Const(
                     ConstOp::CONST_4 {
                         dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
-                        literal: reader.read::<i32>(4).expect("Failed to read literal"),
+                        literal: reader.read::<i8>(4).expect("Failed to read literal"),
                     }
                 )
             }
             0x13 => {
-                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
                 Instruction::Const(
                     ConstOp::CONST_16 {
-                        dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
-                        literal: reader.read::<i32>(16).expect("Failed to read literal"),
+                        dest_register: reader.read_u8().expect("Failed to read dest"),
+                        literal: reader.read_i16::<LittleEndian>().expect("Failed to read literal"),
                     }
                 )
             }
@@ -725,12 +734,51 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                     }
                 )
             }
+            0x15 => {
+                let dest = reader.read_u8().expect("Failed to read dest");
+                let high16 = reader.read_i16::<LittleEndian>().expect("Failed to read literal");
+                Instruction::Const(
+                    ConstOp::CONST_HIGH_16 {
+                        dest_register: dest,
+                        literal: (high16 as i32) << 16,
+                    }
+                )
+            }
             0x16 => {
-                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
                 Instruction::Const(
                     ConstOp::CONST_WIDE_16 {
-                        dest_register: reader.read::<u8>(4).expect("Failed to read dest"),
-                        literal: reader.read::<i64>(16).expect("Failed to read literal"),
+                        dest_register: reader.read_u8().expect("Failed to read dest"),
+                        literal: reader.read_i16::<LittleEndian>().expect("Failed to read literal"),
+                    }
+                )
+            }
+
+            0x17 => {
+                Instruction::Const(
+                    ConstOp::CONST_WIDE_32 {
+                        dest_register: reader.read_u8().expect("Failed to read dest"),
+                        literal: reader.read_i32::<LittleEndian>().expect("Failed to read literal"),
+                    }
+                )
+            }
+            0x18 => {
+                let dest = reader.read_u8().expect("Failed to read dest");
+                let mut buf: [u8; 4] = [0; 4];
+                reader.read_exact(&mut buf).expect("Failed to read literal");
+                Instruction::Const(
+                    ConstOp::CONST_WIDE {
+                        dest_register: dest,
+                        literal: reader.read_i32::<LittleEndian>().expect("Failed to read literal"),
+                    }
+                )
+            }
+            0x19 => {
+                let dest = reader.read_u8().expect("Failed to read dest");
+                let high16 = reader.read_i16::<LittleEndian>().expect("Failed to read literal");
+                Instruction::Const(
+                    ConstOp::CONST_WIDE_HIGH_16 {
+                        dest_register: dest,
+                        literal: (high16 as i64) << 48,
                     }
                 )
             }
@@ -791,7 +839,6 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 let type_id = reader
                     .read::<u16>(16)
                     .expect("Failed to read type_id") as usize;
-                println!("");
                 Instruction::INSTANCE_OF {
                     dest_register: dest,
                     object_register: object,
@@ -825,18 +872,65 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                         ].clone(),
                 }
             }
+            0x24 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let format = Format35c::parse(&mut reader);
+                Instruction::FILLED_NEW_ARRAY {
+                    registers: format.reg_list,
+                    type_: data.type_identifiers[format.bbbb as usize].clone(),
+                }
+            }
+            0x25 => {
+                let format = Format3rc::parse(&mut reader);
+                Instruction::FILLED_NEW_ARRAY_RANGE {
+                    type_: data.type_identifiers[format.bbbb as usize].clone(),
+                    start_register: format.cccc,
+                    register_count: format.reg_count,
+                }
+            }
+            0x26 => {
+                let format = Format31t::parse(&mut reader);
+                let current_position = reader.stream_position().expect("Failed to get current position");
+                let offset_in_bytes = format.bbbbbbbb * 2;
+                let fill_data_position =
+                    if offset_in_bytes > 0 {
+                        instruction_pos
+                            .checked_add(offset_in_bytes as u64)
+                    } else {
+                        instruction_pos
+                            .checked_sub(offset_in_bytes.abs() as u64)
+                    }.expect(&format!("Failed to calculate fill data position. Invalid offset {}", offset_in_bytes));
+
+                Instruction::FILL_ARRAY_DATA {
+                    array_register: format.aa,
+                    data: parse_fill_array_data(
+                        &mut reader,
+                        &mut fill_array_datas,
+                        fill_data_position,
+                    ).also(|_| {
+                        reader.seek(SeekFrom::Start(current_position))
+                            .expect("Failed to seek back to next instruction position");
+                    }),
+                }
+            }
             0x27 => Instruction::THROW(
                 reader.read_u8().expect("Failed to read register")
             ),
             0x28 => Instruction::GOTO(
                 reader.read_i8().expect("Failed to read offset")
             ),
-            0x29 => Instruction::GOTO_16(
-                reader.read_i16::<LittleEndian>().expect("Failed to read offset")
-            ),
-            0x2a => Instruction::GOTO_32(
-                reader.read_i32::<LittleEndian>().expect("Failed to read offset")
-            ),
+            0x29 => {
+                reader.read_u8().expect("Failed to read padding");
+                Instruction::GOTO_16(
+                    reader.read_i16::<LittleEndian>().expect("Failed to read offset")
+                )
+            }
+            0x2a => {
+                reader.read_u8().expect("Failed to read padding");
+                Instruction::GOTO_32(
+                    reader.read_i32::<LittleEndian>().expect("Failed to read offset")
+                )
+            }
             0x2b => {
                 let data = Format31t::parse(&mut reader);
                 let current_position = reader.stream_position().expect("Failed to get current position");
@@ -1056,6 +1150,7 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                     }
                 )
             }
+            0x73 => panic!("Unused opcode encountered: {:02x?}", opcode),
             0x74..=0x78 => {
                 let format = Format3rc::parse(&mut reader);
                 let data = InvokeRangeOpData {
@@ -1064,15 +1159,18 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                     register_count: format.reg_count,
                 };
 
-                match opcode {
-                    0x74 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_VIRTUAL(data)),
-                    0x75 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_SUPER(data)),
-                    0x76 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_DIRECT(data)),
-                    0x77 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_STATIC(data)),
-                    0x78 => Instruction::InvokeRange(InvokeRangeOp::INVOKE_INTERFACE(data)),
-                    _ => panic!("Unreachable")
-                }
+                Instruction::InvokeRange(
+                    match opcode {
+                        0x74 => InvokeRangeOp::INVOKE_VIRTUAL(data),
+                        0x75 => InvokeRangeOp::INVOKE_SUPER(data),
+                        0x76 => InvokeRangeOp::INVOKE_DIRECT(data),
+                        0x77 => InvokeRangeOp::INVOKE_STATIC(data),
+                        0x78 => InvokeRangeOp::INVOKE_INTERFACE(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
             }
+            0x79..=0x7a => panic!("Unused opcode encountered: {:02x?}", opcode),
             0x7b..=0x8f => {
                 let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
                 let data = UnaryOpData {
@@ -1107,10 +1205,56 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                     }
                 )
             }
-            0xb0..=0xcf => {
-                let data = BinaryOp2AddrData {
+            0x90..=0xaf => {
+                let data = BinaryOpData {
                     dest: reader.read_u8().expect("Failed to read dest"),
-                    src: reader.read_u8().expect("Failed to read src"),
+                    src_a: reader.read_u8().expect("Failed to read src_a"),
+                    src_b: reader.read_u8().expect("Failed to read src_b"),
+                };
+
+                Instruction::Binary(
+                    match opcode {
+                        0x90 => BinaryOp::ADD_INT(data),
+                        0x91 => BinaryOp::SUB_INT(data),
+                        0x92 => BinaryOp::MUL_INT(data),
+                        0x93 => BinaryOp::DIV_INT(data),
+                        0x94 => BinaryOp::REM_INT(data),
+                        0x95 => BinaryOp::AND_INT(data),
+                        0x96 => BinaryOp::OR_INT(data),
+                        0x97 => BinaryOp::XOR_INT(data),
+                        0x98 => BinaryOp::SHL_INT(data),
+                        0x99 => BinaryOp::SHR_INT(data),
+                        0x9a => BinaryOp::USHR_INT(data),
+                        0x9b => BinaryOp::ADD_LONG(data),
+                        0x9c => BinaryOp::SUB_LONG(data),
+                        0x9d => BinaryOp::MUL_LONG(data),
+                        0x9e => BinaryOp::DIV_LONG(data),
+                        0x9f => BinaryOp::REM_LONG(data),
+                        0xa0 => BinaryOp::AND_LONG(data),
+                        0xa1 => BinaryOp::OR_LONG(data),
+                        0xa2 => BinaryOp::XOR_LONG(data),
+                        0xa3 => BinaryOp::SHL_LONG(data),
+                        0xa4 => BinaryOp::SHR_LONG(data),
+                        0xa5 => BinaryOp::USHR_LONG(data),
+                        0xa6 => BinaryOp::ADD_FLOAT(data),
+                        0xa7 => BinaryOp::SUB_FLOAT(data),
+                        0xa8 => BinaryOp::MUL_FLOAT(data),
+                        0xa9 => BinaryOp::DIV_FLOAT(data),
+                        0xaa => BinaryOp::REM_FLOAT(data),
+                        0xab => BinaryOp::ADD_DOUBLE(data),
+                        0xac => BinaryOp::SUB_DOUBLE(data),
+                        0xad => BinaryOp::MUL_DOUBLE(data),
+                        0xae => BinaryOp::DIV_DOUBLE(data),
+                        0xaf => BinaryOp::REM_DOUBLE(data),
+                        _ => panic!("Unreachable")
+                    }
+                )
+            }
+            0xb0..=0xcf => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
+                let data = BinaryOp2AddrData {
+                    dest: reader.read::<u8>(4).expect("Failed to read dest"),
+                    src: reader.read::<u8>(4).expect("Failed to read src"),
                 };
 
                 Instruction::Binary2Addr(
@@ -1152,10 +1296,11 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 )
             }
             0xd0..=0xd7 => {
+                let mut reader = BitReader::endian(&mut reader, bitstream_io::LittleEndian);
                 let data = BinaryOpLit16Data {
-                    dest: reader.read_u8().expect("Failed to read dest"),
-                    src: reader.read_u8().expect("Failed to read src"),
-                    literal: reader.read_u16::<LittleEndian>().expect("Failed to read literal"),
+                    dest: reader.read::<u8>(4).expect("Failed to read dest"),
+                    src: reader.read::<u8>(4).expect("Failed to read src"),
+                    literal: reader.read::<i16>(16).expect("Failed to read literal"),
                 };
 
                 Instruction::BinaryLit16(
@@ -1196,10 +1341,23 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 )
             }
             0xe3..=0xf9 => panic!("Unused opcode! {:02x?}", opcode),
+            // 0xfa => ,
+            // 0xfb => ,
+            // 0xfc => ,
+            // 0xfd => ,
+            // 0xfe => ,
+            0xff => Instruction::CONST_METHOD_TYPE {
+                dest: reader.read_u8().expect("Failed to read dest"),
+                method_type: data.prototypes[
+                    reader
+                        .read_u16::<LittleEndian>()
+                        .expect("Failed to read proto_id") as usize
+                    ].clone(),
+            },
             _ => panic!("Unsupported opcode: 0x{:02x?}", opcode),
         };
 
-        println!("Parsed instruction: {:?}", instruction);
+        // println!("Parsed instruction: {:?}", instruction);
 
         result.push(instruction)
     }
@@ -1261,6 +1419,34 @@ fn parse_sparse_switch_table<R: Read + Seek>(reader: &mut R, sparse_switch_table
     });
     sparse_switch_tables.insert(offset, table.clone());
     table
+}
+
+fn parse_fill_array_data<R: Read + Seek>(reader: &mut R, fill_array_data: &mut HashMap<u64, Rc<FillArrayData>>, offset: u64) -> Rc<FillArrayData> {
+    if let Some(data) = fill_array_data.get(&offset) {
+        return data.clone();
+    }
+
+    reader.seek(SeekFrom::Start(offset))
+        .expect(format!("Failed to seek to fill_array_data offset {}", offset).as_str());
+
+    let ident = reader.read_u16::<LittleEndian>().expect("Failed to read ident");
+    if ident != 0x0300 {
+        panic!("Invalid ident: {:02x?}", ident);
+    }
+    let element_width = reader.read_u16::<LittleEndian>().expect("Failed to read element_width");
+    let size = reader.read_u32::<LittleEndian>().expect("Failed to read size");
+    let data = reader.parse_list(size as u64, |file| {
+        file.read_u8().expect("Failed to read data")
+    });
+
+    let data = Rc::new(FillArrayData {
+        size_in_code_units: (size * element_width as u32 + 1) / 2 + 4,
+        element_width,
+        size,
+        data,
+    });
+    fill_array_data.insert(offset, data.clone());
+    data
 }
 
 fn parse_tries(file: &mut File, tries_size: u16) -> Vec<TryItem> {
