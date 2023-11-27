@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::bytecode::instructions::{ConstOp, Instruction, InvokeOp, StaticFieldOp};
+use crate::bytecode::instructions::{ConstOp, IfTestZOp, Instruction, InvokeOp, StaticFieldOp};
 use crate::runtime::class::MethodDefinition;
 use crate::runtime::frame::Frame;
 use crate::runtime::runtime::Runtime;
@@ -21,6 +21,29 @@ impl Interpreter {
             match instruction {
                 // Instruction::NOP => {}
                 // Instruction::RETURN_VOID =>
+                Instruction::MONITOR_ENTER(register) => {
+                    let object = frame.get_register(*register);
+                    // no-op for now, since we are single-threaded yet
+                    // TODO: implement when we will get threads
+                }
+                Instruction::IfTestZ(instruction) => {
+                    match instruction {
+                        // IfTestZOp::IF_EQZ(data) => {}
+                        IfTestZOp::IF_NEZ(data) => {
+                            let register = data.register_a;
+                            let value = frame.get_register(register);
+                            if Value::Int(0) == *value {
+                                instruction_idx = (instruction_idx as isize + data.offset as isize) as usize;
+                                continue;
+                            }
+                        }
+                        // IfTestZOp::IF_LTZ(data) => {}
+                        // IfTestZOp::IF_GEZ(data) => {}
+                        // IfTestZOp::IF_GTZ(data) => {}
+                        // IfTestZOp::IF_LEZ(data) => {}
+                        _ => panic!("Not implemented: {:?}", instruction)
+                    }
+                }
                 Instruction::Const(instruction) => {
                     match instruction {
                         ConstOp::CONST_STRING { dest_register: register, string } => {
