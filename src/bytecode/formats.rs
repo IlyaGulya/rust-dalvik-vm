@@ -174,10 +174,10 @@ impl Format35c where {
         let g = reader.read::<u8>(4).expect("Failed to read G");
         let arg_count = reader.read::<u8>(4).expect("Failed to read A");
         let bbbb = reader.read::<u16>(16).expect("Failed to read BBBB");
-        let mut registers: Vec<u8> = vec![arg_count];
+        let mut registers: Vec<u8> = vec![];
         (0..4).for_each(|_| {
             let reg = reader.read::<u8>(4).expect("Failed to read register");
-            if (registers.len() < arg_count as usize) {
+            if registers.len() < arg_count as usize {
                 registers.push(reg);
             }
         });
@@ -202,7 +202,6 @@ pub struct Format3rc {
 impl Format3rc {
     pub fn parse<R: Read>(reader: &mut R) -> Format3rc {
         let reg_count = reader.read_u8().expect("Failed to read reg_count");
-        println!("reg_count: {}", reg_count);
         return Format3rc {
             reg_count,
             bbbb: reader.read_u16::<byteorder::LittleEndian>().expect(
