@@ -1,9 +1,9 @@
 use std::{env, fs};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
-use std::str::Split;
+
+use cmd_lib::run_cmd;
 
 fn main() {
     generate_bytecode();
@@ -11,6 +11,42 @@ fn main() {
     extract_stdlib();
     strip_stdlib();
     dex_stdlib();
+    dex_entrypoint();
+}
+
+fn dex_entrypoint() {
+    let last_sha256_path = "runtime/build/Entrypoint.java.sha256";
+    let current_sha256 = calculate_sha256("runtime/Entrypoint.java");
+    if File::open("runtime/build/entrypoint.dex").is_ok() {
+        let last_sha256 = fs::read_to_string(last_sha256_path);
+
+        if let Ok(sha) = last_sha256 {
+            if current_sha256 == sha {
+                return;
+            }
+        }
+    }
+
+    let d8 = get_d8_path();
+
+    run_cmd!(
+        cd runtime;
+        mkdir -p build;
+        javac -d build Entrypoint.java &> javac_output.txt;
+        cd build;
+        jar cvf entrypoint.jar me &> jar_output.txt;
+
+        $d8 entrypoint.jar --output entrypoint.dex.zip;
+        unzip entrypoint.dex.zip;
+        mv classes.dex entrypoint.dex;
+    ).expect("Unable to dex entrypoint");
+
+    fs::write(last_sha256_path, current_sha256).expect("Unable to write sha256");
+}
+
+fn calculate_sha256(path: &str) -> String {
+    let data = fs::read(path).expect(&format!("Unable to read {:?}", path));
+    sha256::digest(&data)
 }
 
 fn generate_bytecode() {
@@ -41,9 +77,7 @@ struct Format {
     fields: Vec<Field>,
 }
 
-struct Field {
-
-}
+struct Field {}
 
 // fn parse_formats(p0: Split<&str>) -> T {
 //     todo!()
@@ -52,7 +86,7 @@ struct Field {
 fn strip_stdlib() {
     let mut command = std::process::Command::new("proguard");
     let _ = &command.arg("@proguard-runtime.pro");
-    let output = command.output().expect("Unable to execute d8");
+    let output = command.output().expect("Unable to execute proguard");
     assert!(output.status.success());
 }
 
@@ -86,10 +120,7 @@ fn dex_stdlib() {
     if File::open("toolkit/runtime.dex").is_ok() {
         return;
     }
-    let android_home = std::env::var("ANDROID_HOME").expect("ANDROID_HOME not set");
-    let build_tools_version = find_latest_build_tools().expect("Unable to find build tools");
-    let build_tools = format!("{}/build-tools/{}", android_home, build_tools_version);
-    let d8 = format!("{}/d8", build_tools);
+    let d8 = get_d8_path();
 
     let dex_zip_path = "toolkit/runtime.dex.zip";
 
@@ -105,6 +136,14 @@ fn dex_stdlib() {
         .expect("Unable to extract dex");
 
     fs::rename("toolkit/classes.dex", "toolkit/runtime.dex").expect("Unable to rename dex");
+}
+
+fn get_d8_path() -> String {
+    let android_home = std::env::var("ANDROID_HOME").expect("ANDROID_HOME not set");
+    let build_tools_version = find_latest_build_tools().expect("Unable to find build tools");
+    let build_tools = format!("{}/build-tools/{}", android_home, build_tools_version);
+    let d8 = format!("{}/d8", build_tools);
+    d8
 }
 
 fn try_execute_d8(d8_path: &str) -> bool {

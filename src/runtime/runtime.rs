@@ -48,11 +48,11 @@ impl Runtime {
         );
     }
 
-    pub fn get_class(&mut self, class_name: &str) -> Option<Rc<RefCell<dyn Class>>> {
+    pub fn get_class(&mut self, class_name: Rc<String>) -> Option<Rc<RefCell<dyn Class>>> {
         self.class_loaders
             .iter_mut()
             .find_map(|class_loader| {
-                class_loader.borrow_mut().get_class(class_name).clone()
+                class_loader.borrow_mut().get_class(class_name.clone()).clone()
             })
     }
 }

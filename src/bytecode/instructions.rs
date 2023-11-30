@@ -162,13 +162,13 @@ pub struct InvokeOpData {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum InvokeOp {
-    INVOKE_VIRTUAL(InvokeOpData),
-    INVOKE_SUPER(InvokeOpData),
-    INVOKE_DIRECT(InvokeOpData),
-    INVOKE_STATIC(InvokeOpData),
-    INVOKE_INTERFACE(InvokeOpData),
+    INVOKE_VIRTUAL,
+    INVOKE_SUPER,
+    INVOKE_DIRECT,
+    INVOKE_STATIC,
+    INVOKE_INTERFACE,
 }
 
 #[derive(Debug, PartialEq)]
@@ -418,7 +418,7 @@ pub enum Instruction {
     PACKED_SWITCH { register: u8, table: Rc<PackedSwitchTable> },
     SPARSE_SWITCH { register: u8, table: Rc<SparseSwitchTable> },
     Static(StaticFieldOp),
-    Invoke(InvokeOp),
+    Invoke(InvokeOpData, InvokeOp),
     InvokeRange(InvokeRangeOp),
     Unary(UnaryOp),
     Binary(BinaryOp),

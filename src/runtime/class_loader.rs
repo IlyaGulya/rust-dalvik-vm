@@ -4,11 +4,11 @@ use std::fmt::Debug;
 use std::rc::Rc;
 
 use crate::dex::dex_file::{AccessFlags, ClassDefinition, DexFile};
-use crate::runtime::class::{Class, FieldDescription, MethodDefinition, RuntimeClass, RuntimeField, RuntimeMethod};
-use crate::runtime::value::Value;
+use crate::runtime::class::{Class, MethodDefinition, RuntimeClass, RuntimeField, RuntimeMethod};
+use crate::runtime::frame::Frame;
 
 pub trait ClassLoader: Debug {
-    fn get_class(&mut self, class_name: &str) -> Option<Rc<RefCell<dyn Class>>>;
+    fn get_class(&mut self, class_name: Rc<String>) -> Option<Rc<RefCell<dyn Class>>>;
 }
 
 #[derive(Debug)]
@@ -18,14 +18,21 @@ pub struct DexClassLoader {
     pub loaded_classes: HashMap<String, Rc<RefCell<RuntimeClass>>>,
 }
 
+#[derive(Debug)]
+pub enum ClassLoadResult {
+    AlreadyLoaded(Rc<RefCell<dyn Class>>),
+    Loaded(Rc<RefCell<dyn Class>>),
+    RequiresInitialization(Rc<RefCell<dyn Class>>, Frame),
+}
+
 impl ClassLoader for DexClassLoader {
-    fn get_class(&mut self, class_name: &str) -> Option<Rc<RefCell<dyn Class>>> {
-        let class = self.loaded_classes.get(class_name);
+    fn get_class(&mut self, class_name: Rc<String>) -> Option<Rc<RefCell<dyn Class>>> {
+        let class = self.loaded_classes.get(class_name.as_ref());
         if let Some(class) = class {
             return Some(class.clone());
         }
 
-        let class_definition = self.dex_file.classes.get(class_name)?;
+        let class_definition = self.dex_file.classes.get(class_name.as_ref())?;
 
         let class_data = &class_definition.class_data;
 
@@ -54,10 +61,12 @@ impl ClassLoader for DexClassLoader {
                             },
                             Rc::new(
                                 RuntimeMethod {
+                                    method_def: m.method.clone(),
                                     name: m.method.name.clone(),
                                     descriptor,
                                     method: m.clone(),
                                     is_static: m.access_flags.contains(AccessFlags::ACC_STATIC),
+                                    is_native: m.access_flags.contains(AccessFlags::ACC_NATIVE),
                                 }
                             )
                         )
@@ -67,7 +76,7 @@ impl ClassLoader for DexClassLoader {
                 Default::default()
             };
 
-        let fields: HashMap<FieldDescription, Rc<RuntimeField>> =
+        let fields: HashMap<Rc<String>, Rc<RuntimeField>> =
             if let Some(class_data) = class_data {
                 let static_ = class_data.static_fields.iter();
                 let instance = class_data.instance_fields.iter();
@@ -75,15 +84,11 @@ impl ClassLoader for DexClassLoader {
                 all_fields
                     .map(|f| {
                         (
-                            FieldDescription {
-                                name: f.field.name.clone(),
-                                descriptor: f.field.type_.clone(),
-                            },
+                            f.field.name.clone(),
                             Rc::new(
                                 RuntimeField {
                                     definition: f.field.clone(),
                                     is_static: true,
-                                    value: Value::Default, // TODO: initialize with default value
                                 }
                             )
                         )
@@ -95,14 +100,17 @@ impl ClassLoader for DexClassLoader {
 
         let class = Rc::new(RefCell::new(
             RuntimeClass {
-                name: class_name.to_string(),
+                name: class_name.clone(),
                 definition: class_definition.clone(),
                 methods,
                 fields,
+                static_field_values: Default::default(),
+                initialized: false,
             }
         ));
 
         self.loaded_classes.insert(class_name.to_string(), class.clone());
+
 
         Some(class)
     }

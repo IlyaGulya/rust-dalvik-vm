@@ -5,3 +5,4 @@ pub mod value;
 pub mod frame;
 pub mod mocks;
 pub mod interpreter;
+pub mod instance;

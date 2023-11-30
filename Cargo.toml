@@ -21,7 +21,10 @@ bitmask-enum = "2.2.3"
 dex = "0.5.0"
 bitreader = "0.3.8"
 bitstream-io = "1.8.0"
+regex = { version = "1.10.2", features = [] }
 
 [build-dependencies]
 downloader = { version = "0.2.7", features = ["default-tls", "verify"] }
 zip-extract = "0.1.2"
+cmd_lib = "1.9.1"
+sha256 = "1.4.0"

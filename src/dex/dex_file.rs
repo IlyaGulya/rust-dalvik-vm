@@ -7,6 +7,7 @@ use std::rc::Rc;
 use bitmask_enum::bitmask;
 use bitstream_io::{BitRead, BitReader};
 use byteorder::{LittleEndian, ReadBytesExt};
+use regex::Regex;
 
 use crate::bytecode::formats::{Format31t, Format35c, Format3rc};
 use crate::bytecode::instructions::{ArrayOp, ArrayOpData, BinaryOp, BinaryOp2Addr, BinaryOp2AddrData, BinaryOpData, BinaryOpLit16, BinaryOpLit16Data, BinaryOpLit8, BinaryOpLit8Data, CmpOp, CmpOpData, ConstOp, FillArrayData, IfTestOp, IfTestOpData, IfTestZOp, IfTestZOpData, InstanceFieldOp, InstanceFieldOpData, Instruction, InvokeOp, InvokeOpData, InvokeRangeOp, InvokeRangeOpData, PackedSwitchTable, SparseSwitchTable, StaticFieldOp, StaticFieldOpData, UnaryOp, UnaryOpData};
@@ -20,6 +21,7 @@ pub struct DexFile {
     pub classes: Vec<Rc<ClassDefinition>>,
 }
 
+// TODO: Replace Rc<String> with Rc<str>?
 #[derive(Debug, PartialEq)]
 pub struct DexFileData {
     pub string_data: Vec<Rc<String>>,
@@ -60,6 +62,18 @@ pub struct Method {
 }
 
 impl Method {
+    pub fn full_name(&self) -> String {
+        format!("{}->{}{}", self.definer, self.name, self.full_descriptor())
+    }
+    pub fn full_name_human_readable(&self) -> String {
+        let re = Regex::new(r"(^L|;)").unwrap();
+        re.replace_all(
+            self.full_name()
+                .replace("/", ".")
+                .replace("->", ".").as_str(),
+            ""
+        ).to_string()
+    }
     pub fn full_descriptor(&self) -> String {
         let mut descriptor = String::new();
 
@@ -1140,14 +1154,15 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                 };
 
                 Instruction::Invoke(
+                    data,
                     match opcode {
-                        0x6e => InvokeOp::INVOKE_VIRTUAL(data),
-                        0x6f => InvokeOp::INVOKE_SUPER(data),
-                        0x70 => InvokeOp::INVOKE_DIRECT(data),
-                        0x71 => InvokeOp::INVOKE_STATIC(data),
-                        0x72 => InvokeOp::INVOKE_INTERFACE(data),
+                        0x6e => InvokeOp::INVOKE_VIRTUAL,
+                        0x6f => InvokeOp::INVOKE_SUPER,
+                        0x70 => InvokeOp::INVOKE_DIRECT,
+                        0x71 => InvokeOp::INVOKE_STATIC,
+                        0x72 => InvokeOp::INVOKE_INTERFACE,
                         _ => panic!("Unreachable")
-                    }
+                    },
                 )
             }
             0x73 => panic!("Unused opcode encountered: {:02x?}", opcode),
