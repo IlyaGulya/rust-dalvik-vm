@@ -1,11 +1,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::runtime::instance::Instance;
 
 #[derive(Debug, Clone)]
 pub struct ArrayInstance {
-    pub type_: Rc<String>,
+    pub type_: Arc<String>,
     pub array: Vec<Value>,
 }
 
@@ -16,7 +18,7 @@ pub enum Value {
     Long(i64),
     Float(f32),
     Double(f64),
-    Object(Rc<RefCell<dyn Instance>>),
-    Array(Rc<RefCell<ArrayInstance>>),
-    String(Rc<String>),
+    Object(Arc<RwLock<dyn Instance>>),
+    Array(Arc<RwLock<ArrayInstance>>),
+    String(Arc<String>),
 }

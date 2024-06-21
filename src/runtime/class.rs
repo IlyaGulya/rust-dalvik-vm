@@ -1,7 +1,8 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::rc::Rc;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use crate::dex::dex_file::{ClassDefinition, EncodedMethod, Field, Method};
 use crate::runtime::frame::Frame;
@@ -9,12 +10,12 @@ use crate::runtime::instance::{Instance, RuntimeInstance};
 use crate::runtime::value::Value;
 
 pub enum InvokeResult {
-    Native(Rc<Method>),
+    Native(Arc<Method>),
     Frame(Frame),
 }
 
-pub trait Class: Debug {
-    fn new_instance(&self) -> Rc<RefCell<dyn Instance>>;
+pub trait Class: Debug + Send {
+    fn new_instance(&self) -> Arc<RwLock<dyn Instance>>;
     fn invoke_virtual(&self, method: MethodDefinition, args: &[Value]) -> Frame;
     fn invoke_static(&self, method: MethodDefinition, args: &[Value]) -> InvokeResult;
     fn invoke_direct(&self, method: MethodDefinition, args: &[Value]) -> Frame;
@@ -25,15 +26,15 @@ pub trait Class: Debug {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct MethodDefinition {
-    pub name: Rc<String>,
+    pub name: Arc<String>,
     pub descriptor: MethodDescriptor,
 }
 
 impl MethodDefinition {
     pub fn class_initializer() -> MethodDefinition {
         MethodDefinition {
-            name: Rc::new("<clinit>".to_string()),
-            descriptor: Rc::new("()V".to_string()),
+            name: Arc::new("<clinit>".to_string()),
+            descriptor: Arc::new("()V".to_string()),
         }
     }
 
@@ -44,18 +45,18 @@ impl MethodDefinition {
 
 #[derive(Debug)]
 pub struct RuntimeClass {
-    pub name: Rc<String>,
-    pub definition: Rc<ClassDefinition>,
-    pub methods: HashMap<MethodDefinition, Rc<RuntimeMethod>>,
-    pub fields: HashMap<Rc<String>, Rc<RuntimeField>>,
-    pub static_field_values: HashMap<Rc<String>, Value>,
+    pub name: Arc<String>,
+    pub definition: Arc<ClassDefinition>,
+    pub methods: HashMap<MethodDefinition, Arc<RuntimeMethod>>,
+    pub fields: HashMap<Arc<String>, Arc<RuntimeField>>,
+    pub static_field_values: HashMap<Arc<String>, Value>,
     pub initialized: bool,
 }
 
 impl Class for RuntimeClass {
-    fn new_instance(&self) -> Rc<RefCell<dyn Instance>> {
+    fn new_instance(&self) -> Arc<RwLock<(dyn Instance + 'static)>> {
         let instance = RuntimeInstance::new(self.name.clone());
-        return Rc::new(RefCell::new(instance));
+        return Arc::new(RwLock::new(instance));
     }
     fn invoke_virtual(&self, method: MethodDefinition, args: &[Value]) -> Frame {
         // TODO: implement correct method lookup
@@ -112,24 +113,24 @@ impl Class for RuntimeClass {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct FieldDescription {
-    pub name: Rc<String>,
-    pub descriptor: Rc<String>,
+    pub name: Arc<String>,
+    pub descriptor: Arc<String>,
 }
 
-pub type MethodDescriptor = Rc<String>;
+pub type MethodDescriptor = Arc<String>;
 
 #[derive(Debug, PartialEq)]
 pub struct RuntimeMethod {
-    pub method_def: Rc<Method>,
-    pub name: Rc<String>,
+    pub method_def: Arc<Method>,
+    pub name: Arc<String>,
     pub descriptor: MethodDescriptor,
-    pub method: Rc<EncodedMethod>,
+    pub method: Arc<EncodedMethod>,
     pub is_static: bool,
     pub is_native: bool,
 }
 
 #[derive(Debug)]
 pub struct RuntimeField {
-    pub definition: Rc<Field>,
+    pub definition: Arc<Field>,
     pub is_static: bool,
 }

@@ -1,7 +1,7 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
-use std::rc::Rc;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use crate::dex::dex_file::{EncodedMethod, parse_dex_file};
 use crate::dex_file::ClassDefinition;
@@ -10,7 +10,7 @@ use crate::runtime::class_loader::{ClassLoader, DexClassLoader, RuntimeDexFile};
 
 #[derive(Debug)]
 pub struct Runtime {
-    pub class_loaders: Vec<Rc<RefCell<dyn ClassLoader>>>,
+    pub class_loaders: Vec<Arc<RwLock<dyn ClassLoader>>>,
 }
 
 impl Default for Runtime {
@@ -24,18 +24,17 @@ impl Default for Runtime {
 impl Runtime {
     pub fn load_dex(&mut self, path: &str) {
         let raw_dex_file = crate::dex::raw_dex_file::parse_raw_dex_file(path);
-        let mut opened = fs::File::open(path).unwrap();
-        let dex_file = Rc::new(parse_dex_file(raw_dex_file, &mut opened));
+        let dex_file = Arc::new(parse_dex_file(raw_dex_file, path));
 
-        let classes: HashMap<String, Rc<ClassDefinition>> =
+        let classes: HashMap<String, Arc<ClassDefinition>> =
             dex_file
                 .classes
                 .iter().map(|c| (c.class_type.to_string(), c.clone()))
                 .collect();
 
         self.class_loaders.push(
-            Rc::new(
-                RefCell::new(
+            Arc::new(
+                RwLock::new(
                     DexClassLoader {
                         dex_file: RuntimeDexFile {
                             dex_file: dex_file.clone(),
@@ -48,12 +47,15 @@ impl Runtime {
         );
     }
 
-    pub fn get_class(&mut self, class_name: Rc<String>) -> Option<Rc<RefCell<dyn Class>>> {
-        self.class_loaders
-            .iter_mut()
-            .find_map(|class_loader| {
-                class_loader.borrow_mut().get_class(class_name.clone()).clone()
-            })
+    pub async fn get_class(&mut self, class_name: Arc<String>) -> Option<Arc<RwLock<dyn Class>>> {
+        for class_loader in self.class_loaders.iter_mut() {
+            let class = class_loader.write().await.get_class(class_name.clone());
+            if let Some(class) = class {
+                return Some(class.clone());
+            }
+        }
+        
+        return None
     }
 }
 

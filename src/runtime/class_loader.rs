@@ -1,32 +1,38 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::dex::dex_file::{AccessFlags, ClassDefinition, DexFile};
+use tokio::sync::RwLock;
+
+use crate::dex::access_flags::AccessFlags;
+use crate::dex::dex_file::{ClassDefinition, DexFile};
 use crate::runtime::class::{Class, MethodDefinition, RuntimeClass, RuntimeField, RuntimeMethod};
 use crate::runtime::frame::Frame;
 
-pub trait ClassLoader: Debug {
-    fn get_class(&mut self, class_name: Rc<String>) -> Option<Rc<RefCell<dyn Class>>>;
+pub trait ClassLoader: Debug + Send + Sync {
+    fn get_class(&mut self, class_name: Arc<String>) -> Option<Arc<RwLock<dyn Class>>>;
 }
 
 #[derive(Debug)]
 pub struct DexClassLoader {
     pub dex_file: RuntimeDexFile,
     // TODO: use Rc<str> as key somehow instead of string cloning?
-    pub loaded_classes: HashMap<String, Rc<RefCell<RuntimeClass>>>,
+    pub loaded_classes: HashMap<String, Arc<RwLock<RuntimeClass>>>,
 }
 
 #[derive(Debug)]
 pub enum ClassLoadResult {
-    AlreadyLoaded(Rc<RefCell<dyn Class>>),
-    Loaded(Rc<RefCell<dyn Class>>),
-    RequiresInitialization(Rc<RefCell<dyn Class>>, Frame),
+    AlreadyLoaded(Arc<RwLock<dyn Class>>),
+    Loaded(Arc<RwLock<dyn Class>>),
+    RequiresInitialization(Arc<RwLock<dyn Class>>, Frame),
 }
 
+unsafe impl Send for DexClassLoader {}
+
+unsafe impl Sync for DexClassLoader {}
+
 impl ClassLoader for DexClassLoader {
-    fn get_class(&mut self, class_name: Rc<String>) -> Option<Rc<RefCell<dyn Class>>> {
+    fn get_class(&mut self, class_name: Arc<String>) -> Option<Arc<RwLock<(dyn Class + 'static)>>> {
         let class = self.loaded_classes.get(class_name.as_ref());
         if let Some(class) = class {
             return Some(class.clone());
@@ -36,7 +42,7 @@ impl ClassLoader for DexClassLoader {
 
         let class_data = &class_definition.class_data;
 
-        let methods: HashMap<MethodDefinition, Rc<RuntimeMethod>> =
+        let methods: HashMap<MethodDefinition, Arc<RuntimeMethod>> =
             if let Some(class_data) = class_data {
                 let direct = class_data.direct_methods.iter();
                 let virt = class_data.virtual_methods.iter();
@@ -53,13 +59,13 @@ impl ClassLoader for DexClassLoader {
                         descriptor.push(')');
                         descriptor.push_str(m.method.prototype.return_type.as_str());
 
-                        let descriptor = Rc::new(descriptor);
+                        let descriptor = Arc::new(descriptor);
                         (
                             MethodDefinition {
                                 name: m.method.name.clone(),
                                 descriptor: descriptor.clone(),
                             },
-                            Rc::new(
+                            Arc::new(
                                 RuntimeMethod {
                                     method_def: m.method.clone(),
                                     name: m.method.name.clone(),
@@ -76,7 +82,7 @@ impl ClassLoader for DexClassLoader {
                 Default::default()
             };
 
-        let fields: HashMap<Rc<String>, Rc<RuntimeField>> =
+        let fields: HashMap<Arc<String>, Arc<RuntimeField>> =
             if let Some(class_data) = class_data {
                 let static_ = class_data.static_fields.iter();
                 let instance = class_data.instance_fields.iter();
@@ -85,7 +91,7 @@ impl ClassLoader for DexClassLoader {
                     .map(|f| {
                         (
                             f.field.name.clone(),
-                            Rc::new(
+                            Arc::new(
                                 RuntimeField {
                                     definition: f.field.clone(),
                                     is_static: true,
@@ -98,7 +104,7 @@ impl ClassLoader for DexClassLoader {
                 Default::default()
             };
 
-        let class = Rc::new(RefCell::new(
+        let class = Arc::new(RwLock::new(
             RuntimeClass {
                 name: class_name.clone(),
                 definition: class_definition.clone(),
@@ -118,6 +124,6 @@ impl ClassLoader for DexClassLoader {
 
 #[derive(Debug)]
 pub struct RuntimeDexFile {
-    pub dex_file: Rc<DexFile>,
-    pub classes: HashMap<String, Rc<ClassDefinition>>,
+    pub dex_file: Arc<DexFile>,
+    pub classes: HashMap<String, Arc<ClassDefinition>>,
 }

@@ -1,21 +1,25 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::runtime::value::Value;
 
-pub trait Instance: Debug {
-    fn get_class(&self) -> Rc<String>;
-    fn get_field(&self, field: Rc<String>) -> Value;
-    fn set_field(&mut self, name: Rc<String>, value: Value);
+pub trait Instance: Debug + Send + Sync {
+    fn get_class(&self) -> Arc<String>;
+    fn get_field(&self, field: Arc<String>) -> Value;
+    fn set_field(&mut self, name: Arc<String>, value: Value);
 }
 
+unsafe impl Send for RuntimeInstance {}
+unsafe impl Sync for RuntimeInstance {}
+
 impl Instance for RuntimeInstance {
-    fn get_class(&self) -> Rc<String> {
+    fn get_class(&self) -> Arc<String> {
         return self.class.clone();
     }
 
-    fn get_field(&self, field: Rc<String>) -> Value {
+    fn get_field(&self, field: Arc<String>) -> Value {
         let value = self.fields.get(&*field);
         if let Some(value) = value {
             return value.clone();
@@ -24,19 +28,19 @@ impl Instance for RuntimeInstance {
         return Value::Null;
     }
 
-    fn set_field(&mut self, name: Rc<String>, value: Value) {
+    fn set_field(&mut self, name: Arc<String>, value: Value) {
         self.fields.insert(name, value);
     }
 }
 
 #[derive(Debug)]
 pub struct RuntimeInstance {
-    pub class: Rc<String>,
-    pub fields: HashMap<Rc<String>, Value>,
+    pub class: Arc<String>,
+    pub fields: HashMap<Arc<String>, Value>,
 }
 
 impl RuntimeInstance {
-    pub fn new(class: Rc<String>) -> Self {
+    pub fn new(class: Arc<String>) -> Self {
         RuntimeInstance {
             class,
             fields: Default::default(),

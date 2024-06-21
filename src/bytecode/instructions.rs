@@ -1,27 +1,27 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::dex::dex_file::{Field, Method, Prototype};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StaticFieldOpData {
     pub register: u8,
-    pub field: Rc<Field>,
+    pub field: Arc<Field>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IfTestOpData {
     pub register_a: u8,
     pub register_b: u8,
     pub offset: i16,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IfTestZOpData {
     pub register_a: u8,
     pub offset: i16,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CmpOpData {
     pub destination_register: u8,
     pub register_a: u8,
@@ -29,7 +29,7 @@ pub struct CmpOpData {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CmpOp {
     CMPL_FLOAT(CmpOpData),
     CMPG_FLOAT(CmpOpData),
@@ -39,7 +39,7 @@ pub enum CmpOp {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IfTestOp {
     IF_EQ(IfTestOpData),
     IF_NE(IfTestOpData),
@@ -50,7 +50,7 @@ pub enum IfTestOp {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IfTestZOp {
     IF_EQZ(IfTestZOpData),
     IF_NEZ(IfTestZOpData),
@@ -61,7 +61,7 @@ pub enum IfTestZOp {
 }
 
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArrayOpData {
     pub register_or_pair: u8,
     pub array_register: u8,
@@ -69,7 +69,7 @@ pub struct ArrayOpData {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ArrayOp {
     AGET(ArrayOpData),
     AGET_WIDE(ArrayOpData),
@@ -87,15 +87,15 @@ pub enum ArrayOp {
     APUT_SHORT(ArrayOpData),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InstanceFieldOpData {
     pub register_or_pair: u8,
     pub object_register: u8,
-    pub field: Rc<Field>,
+    pub field: Arc<Field>,
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InstanceFieldOp {
     IGET(InstanceFieldOpData),
     IGET_WIDE(InstanceFieldOpData),
@@ -114,14 +114,14 @@ pub enum InstanceFieldOp {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Const4Data {
     pub dest_register: u8,
     pub literal: i32,
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConstOp {
     CONST_4 { dest_register: u8, literal: i8 },
     CONST_16 { dest_register: u8, literal: i16 },
@@ -131,13 +131,13 @@ pub enum ConstOp {
     CONST_WIDE_32 { dest_register: u8, literal: i32 },
     CONST_WIDE { dest_register: u8, literal: i32 },
     CONST_WIDE_HIGH_16 { dest_register: u8, literal: i64 },
-    CONST_STRING { dest_register: u8, string: Rc<String> },
-    CONST_STRING_JUMBO { dest_register: u8, string: Rc<String> },
-    CONST_CLASS { dest_register: u8, class: Rc<String> },
+    CONST_STRING { dest_register: u8, string: Arc<String> },
+    CONST_STRING_JUMBO { dest_register: u8, string: Arc<String> },
+    CONST_CLASS { dest_register: u8, class: Arc<String> },
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StaticFieldOp {
     SGET(StaticFieldOpData),
     SGET_WIDE(StaticFieldOpData),
@@ -155,9 +155,9 @@ pub enum StaticFieldOp {
     SPUT_SHORT(StaticFieldOpData),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InvokeOpData {
-    pub method: Rc<Method>,
+    pub method: Arc<Method>,
     pub args_registers: Vec<u8>,
 }
 
@@ -171,15 +171,15 @@ pub enum InvokeOp {
     INVOKE_INTERFACE,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InvokeRangeOpData {
-    pub method: Rc<Method>,
+    pub method: Arc<Method>,
     pub start_register: u16,
     pub register_count: u8,
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InvokeRangeOp {
     INVOKE_VIRTUAL(InvokeRangeOpData),
     INVOKE_SUPER(InvokeRangeOpData),
@@ -188,28 +188,28 @@ pub enum InvokeRangeOp {
     INVOKE_INTERFACE(InvokeRangeOpData),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOpData {
     pub dest: u8,
     pub src_a: u8,
     pub src_b: u8,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOp2AddrData {
     pub dest: u8,
     pub src: u8,
 }
 
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnaryOpData {
     pub dest: u8,
     pub src: u8,
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
     NEG_INT(UnaryOpData),
     NOT_INT(UnaryOpData),
@@ -235,7 +235,7 @@ pub enum UnaryOp {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOp {
     ADD_INT(BinaryOpData),
     SUB_INT(BinaryOpData),
@@ -272,7 +272,7 @@ pub enum BinaryOp {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOp2Addr {
     ADD_INT_2ADDR(BinaryOp2AddrData),
     SUB_INT_2ADDR(BinaryOp2AddrData),
@@ -309,14 +309,14 @@ pub enum BinaryOp2Addr {
 }
 
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOpLit16Data {
     pub dest: u8,
     pub src: u8,
     pub literal: i16,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOpLit8Data {
     pub dest: u8,
     pub src: u8,
@@ -324,7 +324,7 @@ pub struct BinaryOpLit8Data {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOpLit16 {
     ADD_INT_LIT16(BinaryOpLit16Data),
     RSUB_INT(BinaryOpLit16Data),
@@ -337,7 +337,7 @@ pub enum BinaryOpLit16 {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOpLit8 {
     ADD_INT_LIT8(BinaryOpLit8Data),
     RSUB_INT_LIT8(BinaryOpLit8Data),
@@ -352,21 +352,21 @@ pub enum BinaryOpLit8 {
     USHR_INT_LIT8(BinaryOpLit8Data),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PackedSwitchTable {
     pub size_in_code_units: u32,
     pub first_key: i32,
     pub targets: Vec<i32>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SparseSwitchTable {
     pub size_in_code_units: u32,
     pub keys: Vec<i32>,
     pub targets: Vec<i32>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FillArrayData {
     pub size_in_code_units: u32,
     pub element_width: u16,
@@ -375,7 +375,7 @@ pub struct FillArrayData {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     NOP,
     MOVE { dest: u8, src: u8 },
@@ -403,20 +403,20 @@ pub enum Instruction {
     Const(ConstOp),
     MONITOR_ENTER(u8),
     MONITOR_EXIT(u8),
-    CHECK_CAST { register: u8, class: Rc<String> },
-    INSTANCE_OF { dest_register: u8, object_register: u8, class: Rc<String> },
+    CHECK_CAST { register: u8, class: Arc<String> },
+    INSTANCE_OF { dest_register: u8, object_register: u8, class: Arc<String> },
     ARRAY_LENGTH { dest_register: u8, array_register: u8 },
-    NEW_INSTANCE { register: u8, class: Rc<String> },
-    NEW_ARRAY { dest_register: u8, size_register: u8, type_: Rc<String> },
-    FILLED_NEW_ARRAY { registers: Vec<u8>, type_: Rc<String> },
-    FILLED_NEW_ARRAY_RANGE { type_: Rc<String>, start_register: u16, register_count: u8 },
-    FILL_ARRAY_DATA { array_register: u8, data: Rc<FillArrayData> },
+    NEW_INSTANCE { register: u8, class: Arc<String> },
+    NEW_ARRAY { dest_register: u8, size_register: u8, type_: Arc<String> },
+    FILLED_NEW_ARRAY { registers: Vec<u8>, type_: Arc<String> },
+    FILLED_NEW_ARRAY_RANGE { type_: Arc<String>, start_register: u16, register_count: u8 },
+    FILL_ARRAY_DATA { array_register: u8, data: Arc<FillArrayData> },
     THROW(u8),
     GOTO(i8),
     GOTO_16(i16),
     GOTO_32(i32),
-    PACKED_SWITCH { register: u8, table: Rc<PackedSwitchTable> },
-    SPARSE_SWITCH { register: u8, table: Rc<SparseSwitchTable> },
+    PACKED_SWITCH { register: u8, table: Arc<PackedSwitchTable> },
+    SPARSE_SWITCH { register: u8, table: Arc<SparseSwitchTable> },
     Static(StaticFieldOp),
     Invoke(InvokeOpData, InvokeOp),
     InvokeRange(InvokeRangeOp),
@@ -425,5 +425,5 @@ pub enum Instruction {
     Binary2Addr(BinaryOp2Addr),
     BinaryLit8(BinaryOpLit8),
     BinaryLit16(BinaryOpLit16),
-    CONST_METHOD_TYPE { dest: u8, method_type: Rc<Prototype> },
+    CONST_METHOD_TYPE { dest: u8, method_type: Arc<Prototype> },
 }

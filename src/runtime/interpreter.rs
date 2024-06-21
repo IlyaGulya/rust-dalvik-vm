@@ -1,11 +1,12 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use crate::bytecode::instructions::{ConstOp, IfTestZOp, InstanceFieldOp, Instruction, InvokeOp, StaticFieldOp};
 use crate::runtime::class::MethodDefinition;
 use crate::runtime::frame::Frame;
-use crate::runtime::runtime::Runtime;
 use crate::runtime::value::{ArrayInstance, Value};
+use crate::vm::main::VmState;
 
 pub struct Interpreter;
 
@@ -16,11 +17,11 @@ pub enum InterpreterSuspendReason {
     Throw,
     NewInstance {
         register: u8,
-        class: Rc<String>,
+        class: Arc<String>,
     },
     Invoke {
         op: InvokeOp,
-        definer: Rc<String>,
+        definer: Arc<String>,
         method: MethodDefinition,
         args: Vec<Value>,
     },
@@ -31,10 +32,18 @@ impl Interpreter {
         Interpreter {}
     }
 
-    pub fn interpret_frame(&self, runtime: &mut Runtime, frame: &mut Frame) -> Result<InterpreterSuspendReason, String> {
+    pub async fn interpret_current_frame(&self, vm_state: &mut VmState, current_frame: &mut Frame) -> Result<InterpreterSuspendReason, String> {
+        let frame = current_frame;
+            // if let Some(frame) = current_frame {
+            //     frame.blocking_write()
+            // } else {
+            //     return Err("No current frame".to_string());
+            // };
         loop {
-            println!("Current instruction: {:?}", frame.code.instructions[frame.current_instruction]);
-            let instruction = &frame.code.instructions[frame.current_instruction];
+            // vm_state.maybe_wait_for_debugger_command();
+            let current_instruction = frame.current_instruction().await.clone();
+            println!("Current instruction: {:?}", current_instruction);
+            let instruction = &current_instruction;
             match instruction {
                 Instruction::NOP => {
                     // do nothing
@@ -57,21 +66,21 @@ impl Interpreter {
                 } => {
                     let size =
                         frame
-                            .get_int_register(*size_register)
+                            .get_int_register(*size_register).await
                             .expect("Attempt to create array with non-int size");
                     let array = vec![Value::Null; size as usize];
-                    frame.set_register(*dest_register, Value::Array(Rc::new(RefCell::new(
+                    frame.set_register(*dest_register, Value::Array(Arc::new(RwLock::new(
                         ArrayInstance {
                             type_: type_.clone(),
                             array,
                         }
-                    ))));
+                    )))).await;
                 }
                 Instruction::IfTestZ(instruction) => {
                     match instruction {
                         IfTestZOp::IF_EQZ(data) => {
                             let register = data.register_a;
-                            let value = frame.get_register(register);
+                            let value = frame.get_register(register).await;
 
                             println!("Comparing {:?} with zero", value);
 
@@ -86,13 +95,13 @@ impl Interpreter {
                                 };
 
                             if is_zero {
-                                frame.current_instruction = (frame.current_instruction as isize + data.offset as isize) as usize;
+                                frame.offset_instruction(data.offset as isize).await;
                                 continue;
                             }
                         }
                         IfTestZOp::IF_NEZ(data) => {
                             let register = data.register_a;
-                            let value = frame.get_register(register);
+                            let value = frame.get_register(register).await;
 
                             println!("Comparing {:?} with zero", value);
 
@@ -107,7 +116,7 @@ impl Interpreter {
                                 };
 
                             if !is_zero {
-                                frame.current_instruction = (frame.current_instruction as isize + data.offset as isize) as usize;
+                                frame.offset_instruction(data.offset as isize).await;
                                 continue;
                             }
                         }
@@ -123,18 +132,18 @@ impl Interpreter {
                         // InstanceFieldOp::IGET(data) => {}
                         // InstanceFieldOp::IGET_WIDE(data) => {}
                         InstanceFieldOp::IGET_OBJECT(data) => {
-                            let register = frame.get_register(data.object_register);
+                            let register = frame.get_register(data.object_register).await;
 
                             let value =
                                 match register {
                                     // TODO: Throw NullPointerException
                                     Value::Null => Err("Attempt to get instance field from a null pointer")?,
                                     Value::Object(object) => {
-                                        object.borrow().get_field(data.field.name.clone())
+                                        object.read().await.get_field(data.field.name.clone())
                                     }
                                     _ => Err("Attempt to get instance field from a non-object register")?,
                                 };
-                            frame.set_register(data.register_or_pair, value)
+                            frame.set_register(data.register_or_pair, value).await
                         }
                         // InstanceFieldOp::IGET_BOOLEAN(data) => {}
                         // InstanceFieldOp::IGET_BYTE(data) => {}
@@ -153,10 +162,10 @@ impl Interpreter {
                 Instruction::Const(instruction) => {
                     match instruction {
                         ConstOp::CONST_4 { dest_register, literal } => {
-                            frame.set_register(*dest_register, Value::Int(*literal as i32));
+                            frame.set_register(*dest_register, Value::Int(*literal as i32)).await;
                         }
                         ConstOp::CONST_STRING { dest_register: register, string } => {
-                            frame.set_register(*register, Value::String(string.clone()));
+                            frame.set_register(*register, Value::String(string.clone())).await;
                         }
                         instruction => panic!("Not implemented: {:?}", instruction)
                     }
@@ -173,17 +182,18 @@ impl Interpreter {
                     // return InterpreterSuspendReason::Invoke {
                     //     new_frame: Frame::new(data.method.code.clone())
                     // };
-                    let args: Vec<Value> =
-                        data.args_registers.
-                            iter().map(|&idx| frame.get_register(idx).clone())
-                            .collect();
+
+                    let mut args: Vec<Value> = vec![];
+                    for register_idx in &data.args_registers {
+                        let value = frame.get_register(*register_idx).await.clone();
+                        args.push(value);
+                    }
 
                     let method = MethodDefinition {
                         name: data.method.name.clone(),
-                        descriptor: Rc::new(data.method.full_descriptor()),
+                        descriptor: Arc::new(data.method.full_descriptor()),
                     };
 
-                    frame.current_instruction += 1; // TODO not sure if this is correct place to go to next instruction.
                     return Ok(
                         InterpreterSuspendReason::Invoke {
                             op: instruction.clone(),
@@ -197,7 +207,7 @@ impl Interpreter {
                     return Ok(InterpreterSuspendReason::ReturnVoid);
                 }
                 Instruction::RETURN_WIDE(register) => {
-                    let value = frame.get_register(*register).clone();
+                    let value = frame.get_register(*register).await.clone();
                     return Ok(InterpreterSuspendReason::ReturnWide(value));
                 }
                 // Instruction::InvokeOp(_) => {}
@@ -205,12 +215,47 @@ impl Interpreter {
                 instruction => panic!("Not implemented: {:?}", instruction)
             }
 
-            if frame.is_completed() {
+            if frame.is_completed().await {
                 return Ok(InterpreterSuspendReason::EndOfFrame);
             }
-            frame.current_instruction += 1;
+            frame.move_to_next_instruction().await;
+            vm_state.maybe_notify_debugger();
         }
 
         panic!("Method did not return anything")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indoc::indoc;
+
+    use crate::testing::interpreter::get_method_frame;
+
+    #[test]
+    fn internal() {
+        let bytecode = get_method_frame(indoc! {"
+            .method public static main([Ljava/lang/String;)V
+
+                .registers 4
+
+                .line 151
+                const-string v0, \"Null output stream\"
+
+                invoke-static {p1, v0}, Ljava/io/PrintStream;->requireNonNull(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;
+
+                move-result-object p1
+
+                check-cast p1, Ljava/io/OutputStream;
+
+                invoke-direct {p0, p2, p1}, Ljava/io/PrintStream;-><init>(ZLjava/io/OutputStream;)V
+
+                .line 152
+                return-void
+
+            .end method
+        "});
+
+        println!()
     }
 }

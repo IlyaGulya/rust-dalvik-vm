@@ -166,24 +166,21 @@ pub struct Format31c {
 // Same for 35ms and 35mi
 pub struct Format35c {
     pub bbbb: u16,
-    pub reg_list: Vec<u8>, // Массив регистров vC, vD, vE, vF, vG
+    pub reg_list: Vec<u8>,
 }
 
 impl Format35c where {
     pub fn parse<R: Read>(reader: &mut BitReader<R, LittleEndian>) -> Format35c {
         let g = reader.read::<u8>(4).expect("Failed to read G");
-        let arg_count = reader.read::<u8>(4).expect("Failed to read A");
+        let a = reader.read::<u8>(4).expect("Failed to read A");
         let bbbb = reader.read::<u16>(16).expect("Failed to read BBBB");
-        let mut registers: Vec<u8> = vec![];
-        (0..4).for_each(|_| {
-            let reg = reader.read::<u8>(4).expect("Failed to read register");
-            if registers.len() < arg_count as usize {
-                registers.push(reg);
-            }
-        });
-        if arg_count == 5 {
-            registers.push(g);
-        }
+        let c = reader.read::<u8>(4).expect("Failed to read C");
+        let d = reader.read::<u8>(4).expect("Failed to read C");
+        let e = reader.read::<u8>(4).expect("Failed to read C");
+        let f = reader.read::<u8>(4).expect("Failed to read C");
+        let mut registers = vec![c, d, e, f, g];
+        // println!("Args: {}. Registers: {:?}", a, registers);
+        registers.truncate(a as usize);
         return Format35c {
             bbbb,
             reg_list: registers,

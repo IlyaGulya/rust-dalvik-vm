@@ -1,16 +1,18 @@
 use std::{f64, io};
 use std::collections::HashMap;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
+use std::sync::Arc;
 
-use bitmask_enum::bitmask;
 use bitstream_io::{BitRead, BitReader};
 use byteorder::{LittleEndian, ReadBytesExt};
 use regex::Regex;
 
 use crate::bytecode::formats::{Format31t, Format35c, Format3rc};
 use crate::bytecode::instructions::{ArrayOp, ArrayOpData, BinaryOp, BinaryOp2Addr, BinaryOp2AddrData, BinaryOpData, BinaryOpLit16, BinaryOpLit16Data, BinaryOpLit8, BinaryOpLit8Data, CmpOp, CmpOpData, ConstOp, FillArrayData, IfTestOp, IfTestOpData, IfTestZOp, IfTestZOpData, InstanceFieldOp, InstanceFieldOpData, Instruction, InvokeOp, InvokeOpData, InvokeRangeOp, InvokeRangeOpData, PackedSwitchTable, SparseSwitchTable, StaticFieldOp, StaticFieldOpData, UnaryOp, UnaryOpData};
+use crate::dex::access_flags::AccessFlags;
 use crate::dex::endian_aware_reader::{Endianness, Leb128Ext, MUtf8Ext};
 use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawClassDataItem, RawClassDef, RawDexFile, RawEncodedField, RawEncodedMethod, RawFieldAnnotation, RawMethodAnnotation};
 
@@ -18,17 +20,17 @@ use crate::dex::raw_dex_file::{RawAnnotationSet, RawAnnotationSetRefList, RawCla
 pub struct DexFile {
     pub header: Header,
     pub data: DexFileData,
-    pub classes: Vec<Rc<ClassDefinition>>,
+    pub classes: Vec<Arc<ClassDefinition>>,
 }
 
 // TODO: Replace Rc<String> with Rc<str>?
 #[derive(Debug, PartialEq)]
 pub struct DexFileData {
-    pub string_data: Vec<Rc<String>>,
-    pub type_identifiers: Vec<Rc<String>>,
-    pub prototypes: Vec<Rc<Prototype>>,
-    pub fields: Vec<Rc<Field>>,
-    pub methods: Vec<Rc<Method>>,
+    pub string_data: Vec<Arc<String>>,
+    pub type_identifiers: Vec<Arc<String>>,
+    pub prototypes: Vec<Arc<Prototype>>,
+    pub fields: Vec<Arc<Field>>,
+    pub methods: Vec<Arc<Method>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -42,23 +44,23 @@ pub struct Header {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct Prototype {
-    pub shorty: Rc<String>,
-    pub return_type: Rc<String>,
-    pub parameters: Vec<Rc<String>>,
+    pub shorty: Arc<String>,
+    pub return_type: Arc<String>,
+    pub parameters: Vec<Arc<String>>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Field {
-    pub definer: Rc<String>,
-    pub type_: Rc<String>,
-    pub name: Rc<String>,
+    pub definer: Arc<String>,
+    pub type_: Arc<String>,
+    pub name: Arc<String>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct Method {
-    pub definer: Rc<String>,
-    pub prototype: Rc<Prototype>,
-    pub name: Rc<String>,
+    pub definer: Arc<String>,
+    pub prototype: Arc<Prototype>,
+    pub name: Arc<String>,
 }
 
 impl Method {
@@ -71,7 +73,7 @@ impl Method {
             self.full_name()
                 .replace("/", ".")
                 .replace("->", ".").as_str(),
-            ""
+            "",
         ).to_string()
     }
     pub fn full_descriptor(&self) -> String {
@@ -89,13 +91,19 @@ impl Method {
     }
 }
 
+impl Debug for Method {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.full_name_human_readable())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct ClassDefinition {
-    pub class_type: Rc<String>,
+    pub class_type: Arc<String>,
     pub access_flags: AccessFlags,
-    pub superclass: Option<Rc<String>>,
-    pub interfaces: Vec<Rc<String>>,
-    pub source_file_name: Option<Rc<String>>,
+    pub superclass: Option<Arc<String>>,
+    pub interfaces: Vec<Arc<String>>,
+    pub source_file_name: Option<Arc<String>>,
     pub annotations: Option<Annotations>,
     pub class_data: Option<ClassData>,
     pub static_values: Vec<EncodedValue>,
@@ -112,32 +120,32 @@ pub struct Annotations {
 #[derive(Debug, PartialEq)]
 pub struct ClassAnnotation {
     pub visibility: Visibility,
-    pub type_: Rc<String>,
+    pub type_: Arc<String>,
     pub elements: Vec<AnnotationElement>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct MethodAnnotation {
-    pub method: Rc<Method>,
+    pub method: Arc<Method>,
     pub annotations: Vec<AnnotationItem>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct ParameterAnnotation {
-    pub method: Rc<Method>,
+    pub method: Arc<Method>,
     pub annotations: Vec<Vec<AnnotationItem>>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct FieldAnnotation {
-    pub field: Rc<Field>,
+    pub field: Arc<Field>,
     pub annotations: Vec<AnnotationItem>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct AnnotationItem {
     pub visibility: Visibility,
-    pub type_: Rc<String>,
+    pub type_: Arc<String>,
     pub elements: Vec<AnnotationElement>,
 }
 
@@ -163,23 +171,23 @@ impl TryInto<Visibility> for u8 {
 
 #[derive(Debug, PartialEq)]
 pub struct ClassData {
-    pub static_fields: Vec<Rc<EncodedField>>,
-    pub instance_fields: Vec<Rc<EncodedField>>,
-    pub direct_methods: Vec<Rc<EncodedMethod>>,
-    pub virtual_methods: Vec<Rc<EncodedMethod>>,
+    pub static_fields: Vec<Arc<EncodedField>>,
+    pub instance_fields: Vec<Arc<EncodedField>>,
+    pub direct_methods: Vec<Arc<EncodedMethod>>,
+    pub virtual_methods: Vec<Arc<EncodedMethod>>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct EncodedField {
-    pub field: Rc<Field>,
+    pub field: Arc<Field>,
     pub access_flags: AccessFlags,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct EncodedMethod {
-    pub method: Rc<Method>,
+    pub method: Arc<Method>,
     pub access_flags: AccessFlags,
-    pub code: Option<Rc<Code>>,
+    pub code: Option<Arc<Code>>,
 }
 
 // Docs: code_item
@@ -193,6 +201,7 @@ pub struct Code {
     // number of words of outgoing argument space
     pub outs_size: u16,
     pub debug_info: Option<DebugInfo>,
+    pub raw_instructions: Vec<u16>,
     pub instructions: Vec<Instruction>,
     pub tries: Vec<TryItem>,
     pub handlers: Vec<EncodedCatchHandler>,
@@ -219,7 +228,7 @@ pub struct EncodedCatchHandler {
 #[derive(Debug, PartialEq)]
 pub struct EncodedTypeAddrPair {
     // index into type_ids list for the type of exception to catch
-    pub type_: Rc<String>,
+    pub type_: Arc<String>,
     // bytecode address of associated exception handler
     pub addr: u64,
 }
@@ -228,7 +237,7 @@ pub struct EncodedTypeAddrPair {
 #[derive(Debug, PartialEq)]
 pub struct DebugInfo {
     pub line_start: u64,
-    pub parameter_names: Vec<Option<Rc<String>>>,
+    pub parameter_names: Vec<Option<Arc<String>>>,
     pub bytecode: Vec<DebugItemBytecodes>,
 }
 
@@ -241,13 +250,13 @@ pub enum EncodedValue {
     Long(i64),
     Float(f32),
     Double(f64),
-    MethodType(Rc<Prototype>),
-    MethodHandle(Rc<Method>),
-    String(Rc<String>),
-    Type(Rc<String>),
-    Field(Rc<Field>),
-    Method(Rc<Method>),
-    Enum(Rc<Field>),
+    MethodType(Arc<Prototype>),
+    MethodHandle(Arc<Method>),
+    String(Arc<String>),
+    Type(Arc<String>),
+    Field(Arc<Field>),
+    Method(Arc<Method>),
+    Enum(Arc<Field>),
     Array(Vec<EncodedValue>),
     Annotation(EncodedAnnotationItem),
     Null,
@@ -256,13 +265,13 @@ pub enum EncodedValue {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct EncodedAnnotationItem {
-    pub type_: Rc<String>,
+    pub type_: Arc<String>,
     pub values: Vec<AnnotationElement>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct AnnotationElement {
-    pub name: Rc<String>,
+    pub name: Arc<String>,
     pub value: EncodedValue,
 }
 
@@ -283,90 +292,31 @@ pub enum DebugItemBytecodes {
     SPECIAL_OPCODE(u8),
 }
 
-
-#[allow(non_camel_case_types)]
-#[bitmask(u32)]
-pub enum AccessFlags {
-    // 0x1
-    ACC_PUBLIC,
-
-    // 0x2
-    ACC_PRIVATE,
-
-    // 0x4
-    ACC_PROTECTED,
-
-    // 0x8
-    ACC_STATIC,
-
-    // 0x10
-    ACC_FINAL,
-
-    // 0x20
-    ACC_SYNCHRONIZED,
-
-    // 0x40
-    ACC_VOLATILE_OR_BRIDGE,
-
-    // 0x80
-    ACC_TRANSIENT_ORVARARGS,
-
-    // 0x100
-    ACC_NATIVE,
-
-    // 0x200
-    ACC_INTERFACE,
-
-    // 0x400
-    ACC_ABSTRACT,
-
-    // 0x800
-    ACC_STRICT,
-
-    // 0x1000
-    ACC_SYNTHETIC,
-
-    // 0x2000
-    ACC_ANNOTATION,
-
-    // 0x4000
-    ACC_ENUM,
-
-    // 0x8000
-    UNUSED,
-
-    // 0x10000
-    ACC_CONSTRUCTOR,
-
-    // 0x20000
-    ACC_DECLARED_SYNCHRONIZED,
-
-}
-
 const NO_INDEX: u32 = 0xffffffff;
 
-pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
+pub fn parse_dex_file(raw: RawDexFile, path: &str) -> DexFile {
+    let mut file = File::open(path).expect("Unable to open dex file");
     let string_data: Vec<_> = raw.string_ids.iter().map(|string_id| {
         file.seek(SeekFrom::Start(string_id.offset as u64))
             .expect(format!("Failed to seek to string data position {}",
                             string_id.offset).as_str());
         let utf16_size = file.read_uleb128().expect("Failed to read string data size");
-        Rc::new(file.read_mutf8(utf16_size).expect(format!("Failed to read string data of size {} at {}", utf16_size, string_id.offset).as_str()))
+        Arc::new(file.read_mutf8(utf16_size).expect(format!("Failed to read string data of size {} at {}", utf16_size, string_id.offset).as_str()))
     }).collect();
     let type_identifiers: Vec<_> = raw.type_ids.iter().map(|type_id| {
         string_data[type_id.descriptor_idx as usize].clone()
     }).collect();
     let prototypes: Vec<_> =
         raw.proto_ids.iter().map(|proto_id| {
-            Rc::new(Prototype {
+            Arc::new(Prototype {
                 shorty: string_data[proto_id.shorty_idx as usize].clone(),
                 return_type: type_identifiers[proto_id.return_type_idx as usize].clone(),
-                parameters: parse_type_list(file, &type_identifiers, proto_id.parameters_off),
+                parameters: parse_type_list(&mut file, &type_identifiers, proto_id.parameters_off),
             })
         }).collect();
 
     let fields: Vec<_> = raw.field_ids.iter().map(|field_id| {
-        Rc::new(Field {
+        Arc::new(Field {
             definer: type_identifiers[field_id.class_idx as usize].clone(),
             type_: type_identifiers[field_id.type_idx as usize].clone(),
             name: string_data[field_id.name_idx as usize].clone(),
@@ -374,7 +324,7 @@ pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
     }).collect();
 
     let methods: Vec<_> = raw.method_ids.iter().map(|method_id| {
-        Rc::new(Method {
+        Arc::new(Method {
             definer: type_identifiers[method_id.class_idx as usize].clone(),
             prototype: prototypes[method_id.proto_idx as usize].clone(),
             name: string_data[method_id.name_idx as usize].clone(),
@@ -389,7 +339,7 @@ pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
         methods,
     };
 
-    let classes: Vec<_> = parse_classes(file, &data, &raw.class_defs);
+    let classes: Vec<_> = parse_classes(&mut file, &data, &raw.class_defs);
 
     return DexFile {
         header: Header {
@@ -404,15 +354,13 @@ pub fn parse_dex_file(raw: RawDexFile, file: &mut File) -> DexFile {
     };
 }
 
-fn parse_classes(file: &mut File, data: &DexFileData, class_defs: &Vec<RawClassDef>) -> Vec<Rc<ClassDefinition>> {
+fn parse_classes(file: &mut File, data: &DexFileData, class_defs: &Vec<RawClassDef>) -> Vec<Arc<ClassDefinition>> {
     class_defs.iter().map(|class_def| {
         let class = data.type_identifiers[class_def.class_idx as usize].clone();
-        Rc::new(
+        Arc::new(
             ClassDefinition {
                 class_type: class,
-                access_flags: AccessFlags {
-                    bits: class_def.access_flags,
-                },
+                access_flags: AccessFlags::from(class_def.access_flags),
                 superclass: if class_def.superclass_idx != NO_INDEX {
                     Some(data.type_identifiers[class_def.superclass_idx as usize].clone())
                 } else { None },
@@ -513,29 +461,25 @@ fn parse_raw_encoded_methods(file: &mut File, size: u64) -> Vec<RawEncodedMethod
     })
 }
 
-fn parse_encoded_fields(fields: Vec<RawEncodedField>, data: &DexFileData) -> Vec<Rc<EncodedField>> {
+fn parse_encoded_fields(fields: Vec<RawEncodedField>, data: &DexFileData) -> Vec<Arc<EncodedField>> {
     fields
         .iter()
         .map(|field| {
             EncodedField {
                 field: data.fields[field.field_idx].clone(),
-                access_flags: AccessFlags {
-                    bits: field.access_flags,
-                },
+                access_flags: AccessFlags::from(field.access_flags),
             }
         })
-        .map(|field| Rc::new(field))
+        .map(|field| Arc::new(field))
         .collect()
 }
 
-fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: &DexFileData) -> Vec<Rc<EncodedMethod>> {
+fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: &DexFileData) -> Vec<Arc<EncodedMethod>> {
     methods
         .iter()
         .map(|raw| {
             let method = data.methods[raw.method_idx].clone();
-            let access_flags = AccessFlags {
-                bits: raw.access_flags,
-            };
+            let access_flags = AccessFlags::from(raw.access_flags);
 
             // println!("Parsing method: {:?}", method);
 
@@ -543,7 +487,7 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
                 method: method.clone(),
                 access_flags,
                 code: if raw.code_off != 0 {
-                    Some(Rc::new(parse_code(file, data, raw.code_off)))
+                    Some(Arc::new(parse_code(file, data, raw.code_off)))
                 } else {
                     let is_abstract = access_flags.contains(AccessFlags::ACC_ABSTRACT);
                     let is_native = access_flags.contains(AccessFlags::ACC_NATIVE);
@@ -554,7 +498,7 @@ fn parse_encoded_methods(file: &mut File, methods: Vec<RawEncodedMethod>, data: 
                 },
             }
         })
-        .map(|method| Rc::new(method))
+        .map(|method| Arc::new(method))
         .collect()
 }
 
@@ -569,6 +513,21 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
     let debug_info_offset = file.read_u32::<LittleEndian>().expect("Failed to read debug_info offset");
     let insns_count = file.read_u32::<LittleEndian>().expect("Failed to read insns_count");
     let raw_insns = parse_raw_insns(file, insns_count);
+    // println!("raw_insns.len() = {}. insns_count = {}", raw_insns.len(), insns_count);
+    let mut raw_u16_instructions: Vec<u16> = vec![];
+    let mut cursor = Cursor::new(&raw_insns);
+
+    loop {
+        let current_position = cursor.position() / 2;
+        if current_position == insns_count as u64 {
+            break;
+        }
+
+        raw_u16_instructions.push(
+            cursor.read_u16::<LittleEndian>().expect("Unable to read instruction")
+        )
+    }
+
 
     if tries_size != 0 && insns_count % 2 != 0 {
         file.read_u16::<LittleEndian>().expect("Failed to skip padding");
@@ -588,21 +547,22 @@ fn parse_code(file: &mut File, data: &DexFileData, offset: u64) -> Code {
         ins_size: ins_size,
         outs_size: outs_size,
         debug_info: debug_info,
+        raw_instructions: raw_u16_instructions,
         instructions: parse_instructions(raw_insns, data),
         tries: tries,
         handlers: handlers,
     }
 }
 
-fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Instruction> {
+pub fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Instruction> {
     // TODO: Not sure how to respect endianness inside single instruction. Currently parsing in little-endian only.
     let slice = raw_instructions.as_slice();
     // TODO: BitReader reads in big-endian only. Need to implement custom reader or create pull request to BitReader.
     let mut reader = BufReader::new(Cursor::new(slice));
     let mut result = vec![];
-    let mut packed_switch_tables: HashMap<u64, Rc<PackedSwitchTable>> = HashMap::new();
-    let mut sparse_switch_tables: HashMap<u64, Rc<SparseSwitchTable>> = HashMap::new();
-    let mut fill_array_datas: HashMap<u64, Rc<FillArrayData>> = HashMap::new();
+    let mut packed_switch_tables: HashMap<u64, Arc<PackedSwitchTable>> = HashMap::new();
+    let mut sparse_switch_tables: HashMap<u64, Arc<SparseSwitchTable>> = HashMap::new();
+    let mut fill_array_datas: HashMap<u64, Arc<FillArrayData>> = HashMap::new();
 
     loop {
         let instruction_pos = reader.stream_position().expect("Failed to get instruction position");
@@ -1153,6 +1113,8 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
                     args_registers: format.reg_list,
                 };
 
+                // print!("Parsing method {}.   ", data.method.full_name_human_readable());
+
                 Instruction::Invoke(
                     data,
                     match opcode {
@@ -1380,7 +1342,7 @@ fn parse_instructions(raw_instructions: Vec<u8>, data: &DexFileData) -> Vec<Inst
     result
 }
 
-fn parse_packed_switch_table<R: Read + Seek>(reader: &mut R, packed_switch_tables: &mut HashMap<u64, Rc<PackedSwitchTable>>, offset: u64) -> Rc<PackedSwitchTable> {
+fn parse_packed_switch_table<R: Read + Seek>(reader: &mut R, packed_switch_tables: &mut HashMap<u64, Arc<PackedSwitchTable>>, offset: u64) -> Arc<PackedSwitchTable> {
     if let Some(table) = packed_switch_tables.get(&offset) {
         return table.clone();
     }
@@ -1398,16 +1360,18 @@ fn parse_packed_switch_table<R: Read + Seek>(reader: &mut R, packed_switch_table
         file.read_i32::<LittleEndian>().expect("Failed to read target")
     });
 
-    let table = Rc::new(PackedSwitchTable {
-        size_in_code_units: (size as u32 * 2) + 4,
-        first_key,
-        targets,
-    });
+    let table = Arc::new(
+        PackedSwitchTable {
+            size_in_code_units: (size as u32 * 2) + 4,
+            first_key,
+            targets,
+        }
+    );
     packed_switch_tables.insert(offset, table.clone());
     table
 }
 
-fn parse_sparse_switch_table<R: Read + Seek>(reader: &mut R, sparse_switch_tables: &mut HashMap<u64, Rc<SparseSwitchTable>>, offset: u64) -> Rc<SparseSwitchTable> {
+fn parse_sparse_switch_table<R: Read + Seek>(reader: &mut R, sparse_switch_tables: &mut HashMap<u64, Arc<SparseSwitchTable>>, offset: u64) -> Arc<SparseSwitchTable> {
     if let Some(table) = sparse_switch_tables.get(&offset) {
         return table.clone();
     }
@@ -1427,16 +1391,22 @@ fn parse_sparse_switch_table<R: Read + Seek>(reader: &mut R, sparse_switch_table
         file.read_i32::<LittleEndian>().expect("Failed to read target")
     });
 
-    let table = Rc::new(SparseSwitchTable {
-        size_in_code_units: (size as u32 * 4) + 2,
-        keys,
-        targets,
-    });
+    let table = Arc::new(
+        SparseSwitchTable {
+            size_in_code_units: (size as u32 * 4) + 2,
+            keys,
+            targets,
+        }
+    );
     sparse_switch_tables.insert(offset, table.clone());
     table
 }
 
-fn parse_fill_array_data<R: Read + Seek>(reader: &mut R, fill_array_data: &mut HashMap<u64, Rc<FillArrayData>>, offset: u64) -> Rc<FillArrayData> {
+fn parse_fill_array_data<R: Read + Seek>(
+    reader: &mut R,
+    fill_array_data: &mut HashMap<u64, Arc<FillArrayData>>,
+    offset: u64,
+) -> Arc<FillArrayData> {
     if let Some(data) = fill_array_data.get(&offset) {
         return data.clone();
     }
@@ -1454,7 +1424,7 @@ fn parse_fill_array_data<R: Read + Seek>(reader: &mut R, fill_array_data: &mut H
         file.read_u8().expect("Failed to read data")
     });
 
-    let data = Rc::new(FillArrayData {
+    let data = Arc::new(FillArrayData {
         size_in_code_units: (size * element_width as u32 + 1) / 2 + 4,
         element_width,
         size,
@@ -1492,7 +1462,7 @@ fn parse_encoded_catch_handler(file: &mut File, data: &DexFileData) -> EncodedCa
             let type_idx = file.read_uleb128().expect("Failed to read type_idx");
             let addr = file.read_uleb128().expect("Failed to read addr");
             EncodedTypeAddrPair {
-                type_: Rc::new(String::from("")),
+                type_: Arc::new(String::from("")),
                 addr,
             }
         })
@@ -1533,7 +1503,7 @@ fn parse_debug_info(file: &mut File, data: &DexFileData, offset: u32) -> Option<
     })
 }
 
-fn parse_parameter_names(file: &mut File, data: &DexFileData) -> Vec<Option<Rc<String>>> {
+fn parse_parameter_names(file: &mut File, data: &DexFileData) -> Vec<Option<Arc<String>>> {
     let size = file.read_uleb128().expect("Failed to read parameter_names size");
     (0..size)
         .map(|_| {
@@ -1870,7 +1840,7 @@ fn parse_annotation_elements(file: &mut File, data: &DexFileData, size: u64) -> 
 }
 
 
-fn parse_type_list(file: &mut File, type_identifiers: &Vec<Rc<String>>, offset: u32) -> Vec<Rc<String>> {
+fn parse_type_list(file: &mut File, type_identifiers: &Vec<Arc<String>>, offset: u32) -> Vec<Arc<String>> {
     if offset == 0 {
         return vec![];
     }
@@ -1884,4 +1854,36 @@ fn parse_type_list(file: &mut File, type_identifiers: &Vec<Rc<String>>, offset: 
             type_identifiers[idx as usize].clone()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod test {
+    use indoc::indoc;
+
+    use crate::testing::interpreter::get_method_frame;
+
+    #[test]
+    fn test_instructions_parser() {
+        let instructions = get_method_frame(indoc! {"
+            .method public static main([Ljava/lang/String;)V
+
+                .registers 4
+
+                .line 151
+                const-string v0, \"Null output stream\"
+
+                invoke-static {p1, v0}, Ljava/io/PrintStream;->requireNonNull(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;
+
+                move-result-object p1
+
+                check-cast p1, Ljava/io/OutputStream;
+
+                invoke-direct {p0, p2, p1}, Ljava/io/PrintStream;-><init>(ZLjava/io/OutputStream;)V
+
+                .line 152
+                return-void
+
+            .end method
+        "});
+    }
 }
